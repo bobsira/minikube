@@ -492,7 +492,7 @@ func TestValidateWindowsOSVersion(t *testing.T) {
 		},
 		{
 			osVersion: "2023",
-			errorMsg:  "Invalid Windows OS Version: 2023. Valid versions are: 2019, 2022",
+			errorMsg:  "Invalid Windows Server OS Version: 2023. Valid OS version are: [2019 2022]",
 		},
 	}
 	for _, test := range tests {
