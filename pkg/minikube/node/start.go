@@ -972,3 +972,8 @@ To see benchmarks checkout https://minikube.sigs.k8s.io/docs/benchmarks/cpuusage
 `, out.V{"drivers": altDriverList.String()})
 	}
 }
+
+// ValidWindowsOS lists the supported Windows OS versions
+func ValidWindowsOSVersions() []string {
+	return []string{"2019", "2022"}
+}

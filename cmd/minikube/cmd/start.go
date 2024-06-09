@@ -1303,6 +1303,13 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 		validateCNI(cmd, viper.GetString(containerRuntime))
 	}
 
+	if cmd.Flags().Changed(windowsNodeVersion) {
+		err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion))
+		if err != nil {
+			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
+		}
+	}
+
 	if cmd.Flags().Changed(staticIP) {
 		if err := validateStaticIP(viper.GetString(staticIP), drvName, viper.GetString(subnet)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
@@ -1421,6 +1428,28 @@ func validateDiskSize(diskSize string) error {
 	if diskSizeMB < minimumDiskSize {
 		return errors.Errorf("Requested disk size %v is less than minimum of %v", diskSizeMB, minimumDiskSize)
 	}
+	return nil
+}
+
+// validateWindowsOSVersion validates the supplied window server os version
+func validateWindowsOSVersion(osVersion string) error {
+	validOptions := node.ValidWindowsOSVersions()
+
+	if osVersion == constants.DefaultWindowsNodeVersion {
+		return nil
+	}
+
+	var validOSVersion bool
+	for _, option := range validOptions {
+		if osVersion == option {
+			validOSVersion = true
+		}
+	}
+
+	if !validOSVersion {
+		return errors.Errorf("Invalid Windows Server OS Version: %s. Valid OS version are: %s", osVersion, node.ValidWindowsOSVersions())
+	}
+
 	return nil
 }
 
