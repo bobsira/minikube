@@ -1304,8 +1304,7 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 	}
 
 	if cmd.Flags().Changed(windowsNodeVersion) {
-		err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion))
-		if err != nil {
+		if err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
 		}
 	}
@@ -1435,22 +1434,11 @@ func validateDiskSize(diskSize string) error {
 func validateWindowsOSVersion(osVersion string) error {
 	validOptions := node.ValidWindowsOSVersions()
 
-	if osVersion == constants.DefaultWindowsNodeVersion {
+	if validOptions[osVersion] {
 		return nil
 	}
 
-	var validOSVersion bool
-	for _, option := range validOptions {
-		if osVersion == option {
-			validOSVersion = true
-		}
-	}
-
-	if !validOSVersion {
-		return errors.Errorf("Invalid Windows Server OS Version: %s. Valid OS version are: %s", osVersion, node.ValidWindowsOSVersions())
-	}
-
-	return nil
+	return errors.Errorf("Invalid Windows Server OS Version: %s. Valid OS version are: %s", osVersion, maps.Keys(validOptions))
 }
 
 // validateRuntime validates the supplied runtime

@@ -973,7 +973,7 @@ To see benchmarks checkout https://minikube.sigs.k8s.io/docs/benchmarks/cpuusage
 	}
 }
 
-// ValidWindowsOS lists the supported Windows OS versions
-func ValidWindowsOSVersions() []string {
-	return []string{"2019", "2022"}
+// ValidWindowsOSVersions lists the supported Windows OS versions
+func ValidWindowsOSVersions() map[string]bool {
+	return map[string]bool{"2019": true, "2022": true}
 }
