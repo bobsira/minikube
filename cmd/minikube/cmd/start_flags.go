@@ -144,6 +144,7 @@ const (
 	staticIP                = "static-ip"
 	gpus                    = "gpus"
 	autoPauseInterval       = "auto-pause-interval"
+	windowsNodeVersion      = "windows-node-version"
 )
 
 var (
@@ -208,6 +209,8 @@ func initMinikubeFlags() {
 	startCmd.Flags().String(staticIP, "", "Set a static IP for the minikube cluster, the IP must be: private, IPv4, and the last octet must be between 2 and 254, for example 192.168.200.200 (Docker and Podman drivers only)")
 	startCmd.Flags().StringP(gpus, "g", "", "Allow pods to use your NVIDIA GPUs. Options include: [all,nvidia] (Docker driver with Docker container-runtime only)")
 	startCmd.Flags().Duration(autoPauseInterval, time.Minute*1, "Duration of inactivity before the minikube VM is paused (default 1m0s)")
+	startCmd.Flags().String(windowsNodeVersion, constants.DefaultWindowsNodeVersion, "The version of Windows to use for the Windows node on a multi-node cluster (e.g., 2019, 2022). Defaults to Windows Server 2022")
+
 }
 
 // initKubernetesFlags inits the commandline flags for Kubernetes related options
