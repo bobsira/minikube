@@ -19,8 +19,10 @@ package cmd
 import (
 	"runtime"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/exp/maps"
 
 	"k8s.io/minikube/pkg/minikube/cni"
 	"k8s.io/minikube/pkg/minikube/config"
@@ -40,8 +42,7 @@ var (
 	workerNode          bool
 	deleteNodeOnFailure bool
 	osType              string
-	windowsNodeVersion  string
-	nodeCount           int
+	windowsVersion      string
 )
 
 var nodeAddCmd = &cobra.Command{
@@ -49,6 +50,15 @@ var nodeAddCmd = &cobra.Command{
 	Short: "Adds a node to the given cluster.",
 	Long:  "Adds a node to the given cluster config, and starts it.",
 	Run: func(cmd *cobra.Command, _ []string) {
+
+		if err := validateWindowsOSVersion(windowsVersion); err != nil {
+			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
+		}
+
+		if err := validateOS(osType); err != nil {
+			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
+		}
+
 		co := mustload.Healthy(ClusterFlagValue())
 		cc := co.Config
 
@@ -97,10 +107,10 @@ var nodeAddCmd = &cobra.Command{
 
 		register.Reg.SetStep(register.InitialSetup)
 
+		// continue with adding the node for windows and linux
 		if osType == "windows" && runtime.GOOS == "windows" {
-			for i := 0; i < nodeCount; i++ {
-				// implement specific windows node add logic; AddWindowsNode()
-			}
+			out.Step(style.Happy, "windowsVersion: {{.windowsVersion}}", out.V{"windowsVersion": windowsVersion})
+
 		} else {
 			if err := node.Add(cc, n, deleteNodeOnFailure); err != nil {
 				_, err := maybeDeleteAndRetry(cmd, *cc, n, nil, err)
@@ -122,10 +132,18 @@ func init() {
 	nodeAddCmd.Flags().BoolVar(&cpNode, "control-plane", false, "If set, added node will become a control-plane. Defaults to false. Currently only supported for existing HA (multi-control plane) clusters.")
 	nodeAddCmd.Flags().BoolVar(&workerNode, "worker", true, "If set, added node will be available as worker. Defaults to true.")
 	nodeAddCmd.Flags().BoolVar(&deleteNodeOnFailure, "delete-on-failure", false, "If set, delete the current cluster if start fails and try again. Defaults to false.")
-
-	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", "The default option if not specified is linux. Set to windows when adding a  windows node to the cluster.")
-	nodeAddCmd.Flags().StringVar(&windowsNodeVersion, "windows-node-version", constants.DefaultWindowsNodeVersion, "The version of Windows to use for the Windows node on a multi-node cluster (e.g., 2019, 2022). Defaults to Windows Server 2022.")
-	nodeAddCmd.Flags().IntVar(&nodeCount, "node-count", 1, "Specify the number of windows nodes to add")
+	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", "Set to windows when adding a  windows node to the cluster.Defaults to linux.")
+	nodeAddCmd.Flags().StringVar(&windowsVersion, "windows-node-version", constants.DefaultWindowsNodeVersion, "The version of Windows to use for the Windows node on a multi-node cluster (e.g., 2019, 2022).")
 
 	nodeCmd.AddCommand(nodeAddCmd)
+}
+
+func validateOS(os string) error {
+	validOptions := node.ValidOS()
+
+	if validOptions[os] {
+		return nil
+	}
+
+	return errors.Errorf("Invalid OS: %s. Valid OS are: %s", os, maps.Keys(validOptions))
 }
