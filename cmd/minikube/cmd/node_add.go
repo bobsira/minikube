@@ -17,8 +17,6 @@ limitations under the License.
 package cmd
 
 import (
-	"runtime"
-
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -106,17 +104,10 @@ var nodeAddCmd = &cobra.Command{
 		}
 
 		register.Reg.SetStep(register.InitialSetup)
-
-		// continue with adding the node for windows and linux
-		if osType == "windows" && runtime.GOOS == "windows" {
-			out.Step(style.Happy, "windowsVersion: {{.windowsVersion}}", out.V{"windowsVersion": windowsVersion})
-
-		} else {
-			if err := node.Add(cc, n, deleteNodeOnFailure); err != nil {
-				_, err := maybeDeleteAndRetry(cmd, *cc, n, nil, err)
-				if err != nil {
-					exit.Error(reason.GuestNodeAdd, "failed to add node", err)
-				}
+		if err := node.Add(cc, n, deleteNodeOnFailure); err != nil {
+			_, err := maybeDeleteAndRetry(cmd, *cc, n, nil, err)
+			if err != nil {
+				exit.Error(reason.GuestNodeAdd, "failed to add node", err)
 			}
 		}
 
