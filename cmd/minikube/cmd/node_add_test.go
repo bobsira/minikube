@@ -1,5 +1,6 @@
 /*
-Copyright 2019 The Kubernetes Authors All rights reserved.
+Copyright 2024 The Kubernetes Authors All rights reserved.
+
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +29,8 @@ func TestValidateOS(t *testing.T) {
 		{"linux", ""},
 		{"windows", ""},
 		{"darwin", ""},
-		{"foo", "Invalid OS: foo. Valid OS are: [linux windows darwin]"},
+		{"foo", "Invalid OS: foo. Valid OS are: linux, windows"},
+
 	}
 	for _, test := range tests {
 		t.Run(test.osType, func(t *testing.T) {

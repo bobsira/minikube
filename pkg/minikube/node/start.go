@@ -979,6 +979,6 @@ func ValidWindowsOSVersions() map[string]bool {
 }
 
 // ValidOS lists the supported OSes
-func ValidOS() map[string]bool {
-	return map[string]bool{"linux": true, "windows": true, "darwin": true}
+func ValidOS() []string {
+	return []string{"linux", "windows"}
 }

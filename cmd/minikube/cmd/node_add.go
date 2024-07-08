@@ -123,7 +123,7 @@ func init() {
 	nodeAddCmd.Flags().BoolVar(&cpNode, "control-plane", false, "If set, added node will become a control-plane. Defaults to false. Currently only supported for existing HA (multi-control plane) clusters.")
 	nodeAddCmd.Flags().BoolVar(&workerNode, "worker", true, "If set, added node will be available as worker. Defaults to true.")
 	nodeAddCmd.Flags().BoolVar(&deleteNodeOnFailure, "delete-on-failure", false, "If set, delete the current cluster if start fails and try again. Defaults to false.")
-	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", "Set to windows when adding a  windows node to the cluster.Defaults to linux.")
+	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", "OS of the node to add. Valid options: %s (default: linux)", strings.Join(node.ValidOS, ", "))
 	nodeAddCmd.Flags().StringVar(&windowsVersion, "windows-node-version", constants.DefaultWindowsNodeVersion, "The version of Windows to use for the Windows node on a multi-node cluster (e.g., 2019, 2022).")
 
 	nodeCmd.AddCommand(nodeAddCmd)
@@ -132,9 +132,11 @@ func init() {
 func validateOS(os string) error {
 	validOptions := node.ValidOS()
 
-	if validOptions[os] {
-		return nil
+	for _, validOS := range validOptions {
+		if os == validOS {
+			return nil
+		}
 	}
 
-	return errors.Errorf("Invalid OS: %s. Valid OS are: %s", os, maps.Keys(validOptions))
+	return errors.Errorf("Invalid OS: %s. Valid OS are: %s", os, strings.Join(validOptions, ", "))
 }
