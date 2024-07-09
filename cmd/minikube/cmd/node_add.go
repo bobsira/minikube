@@ -17,10 +17,12 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"golang.org/x/exp/maps"
 
 	"k8s.io/minikube/pkg/minikube/cni"
 	"k8s.io/minikube/pkg/minikube/config"
@@ -55,6 +57,10 @@ var nodeAddCmd = &cobra.Command{
 
 		if err := validateOS(osType); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
+		}
+
+		if osType == "windows" && cpNode {
+			exit.Message(reason.Usage, "Windows node cannot be used as control-plane nodes.")
 		}
 
 		co := mustload.Healthy(ClusterFlagValue())
@@ -123,7 +129,7 @@ func init() {
 	nodeAddCmd.Flags().BoolVar(&cpNode, "control-plane", false, "If set, added node will become a control-plane. Defaults to false. Currently only supported for existing HA (multi-control plane) clusters.")
 	nodeAddCmd.Flags().BoolVar(&workerNode, "worker", true, "If set, added node will be available as worker. Defaults to true.")
 	nodeAddCmd.Flags().BoolVar(&deleteNodeOnFailure, "delete-on-failure", false, "If set, delete the current cluster if start fails and try again. Defaults to false.")
-	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", "OS of the node to add. Valid options: %s (default: linux)", strings.Join(node.ValidOS, ", "))
+	nodeAddCmd.Flags().StringVar(&osType, "os", "linux", fmt.Sprintf("OS of the node to add. Valid options: %s (default: linux)", strings.Join(node.ValidOS(), ", ")))
 	nodeAddCmd.Flags().StringVar(&windowsVersion, "windows-node-version", constants.DefaultWindowsNodeVersion, "The version of Windows to use for the Windows node on a multi-node cluster (e.g., 2019, 2022).")
 
 	nodeCmd.AddCommand(nodeAddCmd)

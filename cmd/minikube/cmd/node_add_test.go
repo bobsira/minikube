@@ -28,9 +28,7 @@ func TestValidateOS(t *testing.T) {
 	}{
 		{"linux", ""},
 		{"windows", ""},
-		{"darwin", ""},
 		{"foo", "Invalid OS: foo. Valid OS are: linux, windows"},
-
 	}
 	for _, test := range tests {
 		t.Run(test.osType, func(t *testing.T) {
