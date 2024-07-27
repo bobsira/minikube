@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -54,10 +53,6 @@ var (
 	preloadStates = make(map[string]map[string]bool)
 )
 
-var (
-	windowsServerIsoURL = "https://go.microsoft.com/fwlink/p/?LinkID=2195280&clcid=0x409&culture=en-us&country=US"
-)
-
 // TarballName returns name of the tarball
 func TarballName(k8sVersion, containerRuntime string) string {
 	if containerRuntime == "crio" {
@@ -71,10 +66,6 @@ func TarballName(k8sVersion, containerRuntime string) string {
 	}
 	arch := detect.EffectiveArch()
 	return fmt.Sprintf("preloaded-images-k8s-%s-%s-%s-%s-%s.tar.lz4", PreloadVersion, k8sVersion, containerRuntime, storageDriver, arch)
-}
-
-func WindowsServerPath() string {
-	return filepath.Join(targetDir(), "Windows_Server_2022_EVAL_64")
 }
 
 // returns the name of the checksum file
@@ -176,24 +167,6 @@ func Preload(k8sVersion, containerRuntime, driverName string) error {
 	}
 	if err != nil {
 		return err
-	}
-
-	if driverName == driver.HyperV {
-		u, err := url.Parse(windowsServerIsoURL)
-		if err != nil {
-			return errors.Wrapf(err, "url.parse %q", windowsServerIsoURL)
-		}
-
-		// It's already downloaded
-		if u.Scheme == fileScheme {
-			return nil
-		}
-
-		out.Step(style.FileDownload, "Downloading Windows Server 2022 ISO ...")
-
-		if err := downloadWindowsISO(windowsServerIsoURL, WindowsServerPath()); err != nil {
-			return errors.Wrapf(err, "download failed: %s", windowsServerIsoURL)
-		}
 	}
 
 	if f, err := checkCache(targetPath); err == nil && f.Size() != 0 {

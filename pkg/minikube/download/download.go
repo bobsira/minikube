@@ -111,55 +111,6 @@ func download(src, dst string) error {
 	return os.Rename(tmpDst, dst)
 }
 
-func downloadWindowsISO(src, dst string) error {
-	var clientOptions []getter.ClientOption
-	if out.IsTerminal(os.Stdout) && !detect.GithubActionRunner() {
-		progress := getter.WithProgress(DefaultProgressBar)
-		if out.JSON {
-			progress = getter.WithProgress(DefaultJSONOutput)
-		}
-		clientOptions = []getter.ClientOption{progress}
-	} else {
-		clientOptions = []getter.ClientOption{}
-	}
-
-	tmpDst := dst + ".iso"
-
-	client := &getter.Client{
-		Src:     src,
-		Dst:     tmpDst,
-		Dir:     false,
-		Mode:    getter.ClientModeFile,
-		Options: clientOptions,
-		Getters: map[string]getter.Getter{
-			"file":  &getter.FileGetter{Copy: false},
-			"http":  &getter.HttpGetter{Netrc: false},
-			"https": &getter.HttpGetter{Netrc: false},
-		},
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return errors.Wrap(err, "mkdir")
-	}
-
-	if DownloadMock != nil {
-		klog.Infof("Mock download: %s -> %s", src, dst)
-		return DownloadMock(src, dst)
-	}
-
-	// Politely prevent tests from shooting themselves in the foot
-	if withinUnitTest() {
-		return fmt.Errorf("unmocked download under test")
-	}
-
-	klog.Infof("Downloading: %s -> %s", src, dst)
-	if err := client.Get(); err != nil {
-		return errors.Wrapf(err, "getter: %+v", client)
-	}
-	return nil
-	// return os.Rename(tmpDst, dst)
-}
-
 // withinUnitTest detects if we are in running within a unit-test
 func withinUnitTest() bool {
 	// Nope, it's the integration test

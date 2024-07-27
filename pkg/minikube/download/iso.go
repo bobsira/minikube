@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/juju/mutex/v2"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
@@ -141,4 +142,86 @@ func downloadISO(isoURL string, skipChecksum bool) error {
 	}
 
 	return download(urlWithChecksum, dst)
+}
+
+func WindowsISO(windowsIsoURL string) error {
+
+	u, err := url.Parse(windowsIsoURL)
+	if err != nil {
+		return errors.Wrapf(err, "url.parse %q", windowsIsoURL)
+	}
+
+	// It's already downloaded
+	if u.Scheme == fileScheme {
+		return nil
+	}
+
+	// Lock before we check for existence to avoid thundering herd issues
+	dst := filepath.Join(detect.ISOCacheDir(), "Windows_Server_2022_EVAL_64")
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0777); err != nil {
+		return errors.Wrapf(err, "making cache image directory: %s", dst)
+	}
+	spec := lock.PathMutexSpec(dst)
+	spec.Timeout = 10 * time.Minute
+	klog.Infof("acquiring lock: %+v", spec)
+	releaser, err := mutex.Acquire(spec)
+	if err != nil {
+		return errors.Wrapf(err, "unable to acquire lock for %+v", spec)
+	}
+	defer releaser.Release()
+
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+
+	out.Step(style.FileDownload, "Downloading Windows Server ISO ...")
+
+	src := windowsIsoURL
+
+	var clientOptions []getter.ClientOption
+	if out.IsTerminal(os.Stdout) && !detect.GithubActionRunner() {
+		progress := getter.WithProgress(DefaultProgressBar)
+		if out.JSON {
+			progress = getter.WithProgress(DefaultJSONOutput)
+		}
+		clientOptions = []getter.ClientOption{progress}
+	} else {
+		clientOptions = []getter.ClientOption{}
+	}
+
+	tmpDst := dst + ".iso"
+
+	client := &getter.Client{
+		Src:     src,
+		Dst:     tmpDst,
+		Dir:     false,
+		Mode:    getter.ClientModeFile,
+		Options: clientOptions,
+		Getters: map[string]getter.Getter{
+			"file":  &getter.FileGetter{Copy: false},
+			"http":  &getter.HttpGetter{Netrc: false},
+			"https": &getter.HttpGetter{Netrc: false},
+		},
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return errors.Wrap(err, "mkdir")
+	}
+
+	if DownloadMock != nil {
+		klog.Infof("Mock download: %s -> %s", src, dst)
+		return DownloadMock(src, dst)
+	}
+
+	// Politely prevent tests from shooting themselves in the foot
+	if withinUnitTest() {
+		return fmt.Errorf("unmocked download under test")
+	}
+
+	klog.Infof("Downloading: %s -> %s", src, dst)
+	if err := client.Get(); err != nil {
+		return errors.Wrapf(err, "getter: %+v", client)
+	}
+	return nil
 }

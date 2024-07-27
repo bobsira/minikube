@@ -118,6 +118,7 @@ const (
 	ha                      = "ha"
 	nodes                   = "nodes"
 	preload                 = "preload"
+	preloadWindowsIso       = "preload-windows-iso"
 	deleteOnFailure         = "delete-on-failure"
 	forceSystemd            = "force-systemd"
 	kicBaseImage            = "base-image"
@@ -195,6 +196,7 @@ func initMinikubeFlags() {
 	startCmd.Flags().Bool(ha, false, "Create Highly Available Multi-Control Plane Cluster with a minimum of three control-plane nodes that will also be marked for work.")
 	startCmd.Flags().IntP(nodes, "n", 1, "The total number of nodes to spin up. Defaults to 1.")
 	startCmd.Flags().Bool(preload, true, "If set, download tarball of preloaded images if available to improve start time. Defaults to true.")
+	startCmd.Flags().Bool(preloadWindowsIso, false, "If set, download the Windows ISO to improve start time of setting up a windows node. Defaults to false.")
 	startCmd.Flags().Bool(noKubernetes, false, "If set, minikube VM/container will start without starting or configuring Kubernetes. (only works on new clusters)")
 	startCmd.Flags().Bool(deleteOnFailure, false, "If set, delete the current cluster if start fails and try again. Defaults to false.")
 	startCmd.Flags().Bool(forceSystemd, false, "If set, force the container runtime to use systemd as cgroup manager. Defaults to false.")
