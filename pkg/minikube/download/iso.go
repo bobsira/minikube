@@ -55,7 +55,7 @@ func DefaultISOURLs() []string {
 	}
 }
 
-// This function get the ISO URL for the Windows version
+// WindowsISOURL retrieves the ISO URL for the Windows version specified
 func WindowsISOURL(version string) string {
 	versionToIsoUrl := map[string]string{
 		"2022": constants.DefaultWindowsServerIsoURL,

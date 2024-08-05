@@ -1311,12 +1311,6 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 		validateCNI(cmd, viper.GetString(containerRuntime))
 	}
 
-	// if viper.GetBool(preloadWindowsIso) {
-	// 	if err := download.WindowsISO(constants.DefaultWindowsServerIsoURL); err != nil {
-	// 		exit.Message(reason.Usage, "Failed to download Windows ISO file: {{.constants.DefaultWindowsServerIsoURL}}", out.V{"constants.DefaultWindowsServerIsoURL": constants.DefaultWindowsServerIsoURL})
-	// 	}
-	// }
-
 	if cmd.Flags().Changed(windowsNodeVersion) {
 		if err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
@@ -1325,9 +1319,6 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 		// set preloadWindowsIso to true since we need to download the windows ISO file
 		viper.Set(preloadWindowsIso, true)
 
-		// if err := download.WindowsISO(constants.DefaultWindowsServerIsoURL); err != nil {
-		// 	exit.Message(reason.Usage, "Failed to download Windows ISO file: {{.constants.DefaultWindowsServerIsoURL}}", out.V{"constants.DefaultWindowsServerIsoURL": constants.DefaultWindowsServerIsoURL})
-		// }
 	}
 
 	if cmd.Flags().Changed(staticIP) {
