@@ -591,6 +591,7 @@ func generateNewConfigFromFlags(cmd *cobra.Command, k8sVersion string, rtime str
 		SocketVMnetClientPath:   detect.SocketVMNetClientPath(),
 		SocketVMnetPath:         detect.SocketVMNetPath(),
 		StaticIP:                viper.GetString(staticIP),
+		WindowsNodeVersion:      viper.GetString(windowsNodeVersion),
 		KubernetesConfig: config.KubernetesConfig{
 			KubernetesVersion:      k8sVersion,
 			ClusterName:            ClusterFlagValue(),
@@ -842,6 +843,7 @@ func updateExistingConfigFromFlags(cmd *cobra.Command, existing *config.ClusterC
 	updateStringFromFlag(cmd, &cc.SocketVMnetClientPath, socketVMnetClientPath)
 	updateStringFromFlag(cmd, &cc.SocketVMnetPath, socketVMnetPath)
 	updateDurationFromFlag(cmd, &cc.AutoPauseInterval, autoPauseInterval)
+	updateStringFromFlag(cmd, &cc.WindowsNodeVersion, windowsNodeVersion)
 
 	if cmd.Flags().Changed(kubernetesVersion) {
 		kubeVer, err := getKubernetesVersion(existing)

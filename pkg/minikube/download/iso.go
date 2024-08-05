@@ -31,6 +31,7 @@ import (
 	"github.com/juju/mutex/v2"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/style"
@@ -52,6 +53,22 @@ func DefaultISOURLs() []string {
 		fmt.Sprintf("https://github.com/kubernetes/minikube/releases/download/%s/minikube-%s-%s.iso", v, v, runtime.GOARCH),
 		fmt.Sprintf("https://kubernetes.oss-cn-hangzhou.aliyuncs.com/minikube/iso/minikube-%s-%s.iso", v, runtime.GOARCH),
 	}
+}
+
+// This function get the ISO URL for the Windows version
+func WindowsISOURL(version string) string {
+	versionToIsoUrl := map[string]string{
+		"2022": constants.DefaultWindowsServerIsoURL,
+		// Add more versions here when we support them
+	}
+
+	url, exists := versionToIsoUrl[version]
+	if !exists {
+		klog.Warningf("Windows version %s is not supported. Using default Windows Server ISO URL", version)
+		return constants.DefaultWindowsServerIsoURL
+	}
+
+	return url
 }
 
 // LocalISOResource returns a local file:// URI equivalent for a local or remote ISO path
@@ -107,9 +124,10 @@ func ISO(urls []string, skipChecksum bool) (string, error) {
 	return "", fmt.Errorf(msg.String())
 }
 
-func WindowsISO(windowsIsoURL string) error {
+func WindowsISO(windowsVersion string) error {
 	isWindowsISO = true
-	return downloadISO(windowsIsoURL, false)
+	isoUrl := WindowsISOURL(windowsVersion)
+	return downloadISO(isoUrl, false)
 }
 
 // downloadISO downloads an ISO URL
