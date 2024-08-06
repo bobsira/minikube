@@ -57,12 +57,12 @@ func DefaultISOURLs() []string {
 
 // WindowsISOURL retrieves the ISO URL for the Windows version specified
 func WindowsISOURL(version string) string {
-	versionToIsoUrl := map[string]string{
+	versionToIsoURL := map[string]string{
 		"2022": constants.DefaultWindowsServerIsoURL,
 		// Add more versions here when we support them
 	}
 
-	url, exists := versionToIsoUrl[version]
+	url, exists := versionToIsoURL[version]
 	if !exists {
 		klog.Warningf("Windows version %s is not supported. Using default Windows Server ISO URL", version)
 		return constants.DefaultWindowsServerIsoURL
@@ -126,8 +126,8 @@ func ISO(urls []string, skipChecksum bool) (string, error) {
 
 func WindowsISO(windowsVersion string) error {
 	isWindowsISO = true
-	isoUrl := WindowsISOURL(windowsVersion)
-	return downloadISO(isoUrl, false)
+	isoURL := WindowsISOURL(windowsVersion)
+	return downloadISO(isoURL, false)
 }
 
 // downloadISO downloads an ISO URL
