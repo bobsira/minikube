@@ -160,6 +160,9 @@ func parseOSFlag(osFlagValue string) (string, string, error) {
 
 	// if os is specified to linux, set the version to empty string as it is not required
 	if osInfo["os"] == "linux" {
+		if osInfo["version"] != "" {
+			out.WarningT("Ignoring version flag for linux os. You do not need to specify the version for linux os.")
+		}
 		osInfo["version"] = ""
 	}
 
