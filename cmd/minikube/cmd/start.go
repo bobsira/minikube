@@ -356,6 +356,13 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 		os.Exit(0)
 	}
 
+	// If preloadWindowsIso flag is true then cache the windows ISO
+	if viper.GetBool(preloadWindowsIso) {
+		if err := download.WindowsISO(viper.GetString(windowsNodeVersion)); err != nil {
+			return node.Starter{}, errors.Wrap(err, "Failed to cache Windows ISO")
+		}
+	}
+
 	if driver.IsVM(driverName) && !driver.IsSSH(driverName) {
 		url, err := download.ISO(viper.GetStringSlice(isoURL), cmd.Flags().Changed(isoURL))
 		if err != nil {
@@ -1308,6 +1315,10 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 		if err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
 		}
+
+		// set preloadWindowsIso to true since we need to download the windows ISO file
+		viper.Set(preloadWindowsIso, true)
+
 	}
 
 	if cmd.Flags().Changed(staticIP) {
