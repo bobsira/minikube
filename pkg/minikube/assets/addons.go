@@ -316,7 +316,7 @@ var Addons = map[string]*Addon{
 		MustBinAsset(addons.InspektorGadgetAssets, "inspektor-gadget/ig-daemonset.yaml.tmpl", vmpath.GuestAddonsDir, "ig-daemonset.yaml", "0640"),
 	}, false, "inspektor-gadget", "3rd party (inspektor-gadget.io)", "https://github.com/orgs/inspektor-gadget/people", "https://minikube.sigs.k8s.io/docs/handbook/addons/inspektor-gadget/",
 		map[string]string{
-			"InspektorGadget": "inspektor-gadget/inspektor-gadget:v0.30.0@sha256:bda802dd37a41ba160bf10134538fd1a1ce05efcc14ab4c38b5f6b1e6dccd734",
+			"InspektorGadget": "inspektor-gadget/inspektor-gadget:v0.31.0@sha256:6b2f7ac9fe6f547cfa541d9217f03da0d0c4615b561d5455a23d0edbbd607ecc",
 		}, map[string]string{
 			"InspektorGadget": "ghcr.io",
 		}),
@@ -340,7 +340,7 @@ var Addons = map[string]*Addon{
 			"pod.yaml",
 			"0640"),
 	}, false, "kubevirt", "3rd party (KubeVirt)", "", "https://minikube.sigs.k8s.io/docs/handbook/addons/kubevirt/", map[string]string{
-		"Kubectl": "bitnami/kubectl:1.30.3@sha256:c20ccfdedb71c0c5374dba6841a09e10e9941d6e776e14d43d99c2113585c9ba",
+		"Kubectl": "bitnami/kubectl:1.30.3@sha256:fc6e48522aa4417275d6fa92bd820f426bbf27454c80b327c449ef6e32467bd3",
 	}, map[string]string{
 		"Kubectl": "docker.io",
 	}),
@@ -799,7 +799,7 @@ var Addons = map[string]*Addon{
 		MustBinAsset(addons.NvidiaDevicePlugin, "nvidia-device-plugin/nvidia-device-plugin.yaml.tmpl", vmpath.GuestAddonsDir, "nvidia-device-plugin.yaml", "0640"),
 	}, false, "nvidia-device-plugin", "3rd party (NVIDIA)", "", "https://minikube.sigs.k8s.io/docs/tutorials/nvidia/",
 		map[string]string{
-			"NvidiaDevicePlugin": "nvidia/k8s-device-plugin:v0.16.1@sha256:89612c7851300ddeed218b9df0dcb33bbb8495282aa17c554038e52387ce7f1e",
+			"NvidiaDevicePlugin": "nvidia/k8s-device-plugin:v0.16.2@sha256:ed39e22c8b71343fb996737741a99da88ce6c75dd83b5c520e0b3d8e8a884c47",
 		}, map[string]string{
 			"NvidiaDevicePlugin": "nvcr.io",
 		}),
