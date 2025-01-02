@@ -30,6 +30,8 @@ import (
 var (
 	// SupportedArchitectures is the list of supported architectures
 	SupportedArchitectures = [5]string{"amd64", "arm", "arm64", "ppc64le", "s390x"}
+	// IP Address for the control plane
+	MasterNodeIP = ""
 )
 
 const (

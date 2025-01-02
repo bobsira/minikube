@@ -86,14 +86,19 @@ type LocalClient struct {
 	flock        *fslock.Lock
 }
 
+// DefineGuest is a method required by the libmachine.API interface.
+func (api *LocalClient) DefineGuest(h *host.Host) {
+	api.legacyClient.DefineGuest(h)
+}
+
 // NewHost creates a new Host
-func (api *LocalClient) NewHost(drvName string, rawDriver []byte) (*host.Host, error) {
+func (api *LocalClient) NewHost(drvName string, guestOS string, rawDriver []byte) (*host.Host, error) {
 	def := registry.Driver(drvName)
 	if def.Empty() {
 		return nil, fmt.Errorf("driver %q does not exist", drvName)
 	}
 	if def.Init == nil {
-		return api.legacyClient.NewHost(drvName, rawDriver)
+		return api.legacyClient.NewHost(drvName, guestOS, rawDriver)
 	}
 	d := def.Init()
 	err := json.Unmarshal(rawDriver, d)
@@ -106,6 +111,7 @@ func (api *LocalClient) NewHost(drvName string, rawDriver []byte) (*host.Host, e
 		Name:          d.GetMachineName(),
 		Driver:        d,
 		DriverName:    d.DriverName(),
+		GuestOS:       guestOS,
 		HostOptions: &host.Options{
 			AuthOptions: &auth.Options{
 				CertDir:          api.certsDir,
@@ -229,8 +235,12 @@ func (api *LocalClient) Create(h *host.Host) error {
 		{
 			"provisioning",
 			func() error {
-				// Skippable because we don't reconfigure Docker?
+				// Skipped because we don't reconfigure Docker?
 				if driver.BareMetal(h.Driver.DriverName()) {
+					return nil
+				}
+				// Skipped because we don't reconfigure Docker for Windows Host
+				if h.GuestOS == "windows" {
 					return nil
 				}
 				return provisionDockerMachine(h)
