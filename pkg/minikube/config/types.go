@@ -149,6 +149,7 @@ type Node struct {
 	ContainerRuntime  string
 	ControlPlane      bool
 	Worker            bool
+	OS                string
 }
 
 // VersionedExtraOption holds information on flags to apply to a specific range

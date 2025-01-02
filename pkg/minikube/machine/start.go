@@ -17,6 +17,7 @@ limitations under the License.
 package machine
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -27,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/blang/semver/v4"
 	"github.com/docker/machine/libmachine"
@@ -145,7 +148,7 @@ func createHost(api libmachine.API, cfg *config.ClusterConfig, n *config.Node) (
 		return nil, errors.Wrap(err, "marshal")
 	}
 
-	h, err := api.NewHost(cfg.Driver, data)
+	h, err := api.NewHost(cfg.Driver, n.OS, data)
 	if err != nil {
 		return nil, errors.Wrap(err, "new host")
 	}
@@ -154,6 +157,8 @@ func createHost(api libmachine.API, cfg *config.ClusterConfig, n *config.Node) (
 	h.HostOptions.AuthOptions.CertDir = localpath.MiniPath()
 	h.HostOptions.AuthOptions.StorePath = localpath.MiniPath()
 	h.HostOptions.EngineOptions = engineOptions(*cfg)
+
+	api.DefineGuest(h)
 
 	cstart := time.Now()
 	klog.Infof("libmachine.API.Create for %q (driver=%q)", cfg.Name, cfg.Driver)
@@ -183,6 +188,7 @@ func timedCreateHost(h *host.Host, api libmachine.API, t time.Duration) error {
 	create := make(chan error, 1)
 	go func() {
 		defer close(create)
+		klog.Infof("libmachine.API.Create starting for %q (GuestOS=%q)", h.Name, h.GuestOS)
 		create <- api.Create(h)
 	}()
 
@@ -297,6 +303,12 @@ func postStartSetup(h *host.Host, mc config.ClusterConfig) error {
 	}()
 
 	if driver.IsMock(h.DriverName) {
+		return nil
+	}
+
+	// skip postStartSetup for windows guest os
+	if h.GuestOS == "windows" {
+		klog.Infof("skipping postStartSetup for windows guest os")
 		return nil
 	}
 
@@ -426,4 +438,69 @@ func addHostAliasCommand(name string, record string, sudo bool, path string) *ex
 		sudoCmd,
 		path)
 	return exec.Command("/bin/bash", "-c", script)
+}
+
+func AddHostAliasWindows(controlPlaneIP string, hostDriverIP string) (string, error) {
+	// log controlPlaneIP
+	klog.Infof("controlPlaneIP: %s", controlPlaneIP)
+	path := "C:\\Windows\\System32\\drivers\\etc\\hosts"
+	psScript := handleHostScriptCommand(controlPlaneIP, path)
+
+	// Escape double quotes inside the script
+	psScript = strings.ReplaceAll(psScript, `"`, `\"`)
+
+	config := &ssh.ClientConfig{
+		User: "Administrator",
+		Auth: []ssh.AuthMethod{
+			ssh.Password("password"),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	// add 22 port to ip
+	hostDriverIP = hostDriverIP + ":22"
+	// log the ip
+	klog.Infof("hostDriverIP: %s", hostDriverIP)
+
+	client, err := ssh.Dial("tcp", hostDriverIP, config)
+	if err != nil {
+		klog.Warningf("Failed to connect: %v", err)
+	}
+	defer client.Close()
+
+	return CmdOut(client, psScript)
+}
+
+func handleHostScriptCommand(ip string, path string) string {
+	entry := fmt.Sprintf("\t%s\tcontrol-plane.minikube.internal", ip)
+	script := fmt.Sprintf(
+		`$hostsContent = Get-Content -Path "%s" -Raw -ErrorAction SilentlyContinue; if ($hostsContent -notmatch [regex]::Escape("%s")) { Add-Content -Path "%s" -Value "%s" -Force | Out-Null }`,
+		path, entry, path, entry)
+	return script
+}
+
+func CmdOut(client *ssh.Client, script string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", script)
+	klog.Infof("[executing] : %v", command)
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	err = session.Run(command)
+	klog.Infof("[stdout =====>] : %s", stdout.String())
+	klog.Infof("[stderr =====>] : %s", stderr.String())
+	return stdout.String(), err
+}
+
+func cmd(client *ssh.Client, args ...string) error {
+	script := strings.Join(args, " ")
+	_, err := CmdOut(client, script)
+	return err
 }

@@ -499,6 +499,7 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 				KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
 				ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
 				Worker:            true,
+				OS:                "linux",
 			}
 			if i < numCPNodes { // starter node is also counted as (primary) cp node
 				n.ControlPlane = true
@@ -510,23 +511,24 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
 			return nil, errors.Wrap(err, "adding linux node")
 		}
+	}
 
-		// start windows node. trigger windows node start only if windows node version is set at the time of minikube start
-		if cmd.Flags().Changed(windowsNodeVersion) {
-			// TODO: if windows node version is set to windows server 2022 then the windows node name should be minikube-ws2022
-			nodeName := node.Name(numNodes + 1)
-			n := config.Node{
-				Name:              nodeName,
-				Port:              starter.Cfg.APIServerPort,
-				KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
-				ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
-				Worker:            true,
-			}
+	// start windows node. trigger windows node start only if windows node version is set at the time of minikube start
+	if cmd.Flags().Changed(windowsNodeVersion) {
+		// TODO: if windows node version is set to windows server 2022 then the windows node name should be minikube-ws2022
+		nodeName := node.Name(numNodes + 1)
+		n := config.Node{
+			Name:              nodeName,
+			Port:              starter.Cfg.APIServerPort,
+			KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
+			ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
+			Worker:            true,
+			OS:                "windows",
+		}
 
-			out.Ln("") // extra newline for clarity on the command line
-			if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
-				return nil, errors.Wrap(err, "adding windows node")
-			}
+		out.Ln("") // extra newline for clarity on the command line
+		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
+			return nil, errors.Wrap(err, "adding windows node")
 		}
 	}
 

@@ -37,6 +37,7 @@ import (
 	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
+	"golang.org/x/crypto/ssh"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -751,6 +752,73 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 	return nil
 }
 
+func (k *Bootstrapper) SetMinikubeFolderErrorScript(hostDriverIP string) (string, error) {
+	script := fmt.Sprintf(
+		`mkdir c:\var\lib\minikube\certs; Copy-Item C:\etc\kubernetes\pki\ca.crt -Destination C:\var\lib\Minikube\Certs; Remove-Item C:\etc\kubernetes\pki\ca.crt`)
+
+	// Escape double quotes for remote execution
+	script = strings.ReplaceAll(script, `"`, `\"`)
+
+	config := &ssh.ClientConfig{
+		User: "Administrator",
+		Auth: []ssh.AuthMethod{
+			ssh.Password("password"),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	// Add port 22 to the IP
+	hostDriverIP = hostDriverIP + ":22"
+	// Log the IP
+	klog.Infof("hostDriverIP: %s", hostDriverIP)
+
+	client, err := ssh.Dial("tcp", hostDriverIP, config)
+	if err != nil {
+		klog.Warningf("Failed to connect: %v", err)
+		return "", err
+	}
+	defer client.Close()
+
+	// Execute the script on the remote Windows node
+	return machine.CmdOut(client, script)
+}
+
+// JoinCluster adds new node to an existing cluster.
+func (k *Bootstrapper) JoinClusterWindows(hostDriverIP string, cc config.ClusterConfig, n config.Node, joinCmd string) (string, error) {
+	// define the path to set location
+	setLocationPath := `Set-Location -Path "C:\k"`
+
+	// Form the script to be executed
+	psScript := fmt.Sprintf("%s; %s", setLocationPath, joinCmd)
+
+	// Escape double quotes inside the script
+	psScript = strings.ReplaceAll(psScript, `"`, `\"`)
+
+	config := &ssh.ClientConfig{
+		User: "Administrator",
+		Auth: []ssh.AuthMethod{
+			ssh.Password("password"),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	// Add port 22 to the IP
+	hostDriverIP = hostDriverIP + ":22"
+	// Log the IP
+	klog.Infof("hostDriverIP: %s", hostDriverIP)
+
+	client, err := ssh.Dial("tcp", hostDriverIP, config)
+	if err != nil {
+		klog.Warningf("Failed to connect: %v", err)
+		return "", err
+	}
+	defer client.Close()
+
+	// Execute the script on the remote Windows node
+	return machine.CmdOut(client, psScript)
+
+}
+
 // JoinCluster adds new node to an existing cluster.
 func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinCmd string) error {
 	// Join the control plane by specifying its token
@@ -776,6 +844,27 @@ func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinC
 	}
 
 	return nil
+}
+
+// GenerateToken creates a token and returns the appropriate kubeadm join command to run, or the already existing token
+func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, error) {
+	tokenCmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.InvokeKubeadm(cc.KubernetesConfig.KubernetesVersion)))
+	r, err := k.c.RunCmd(tokenCmd)
+	if err != nil {
+		return "", errors.Wrap(err, "generating join command")
+	}
+
+	joinCmd := r.Stdout.String()
+	// log the join command for debugging purposes
+	klog.Infof("Generated join command ===: %s", joinCmd)
+	joinCmd = strings.Replace(joinCmd, "kubeadm", ".\\kubeadm.exe", 1)
+	joinCmd = fmt.Sprintf("%s --ignore-preflight-errors=all", strings.TrimSpace(joinCmd))
+
+	// append the cri-socket flag to the join command for windows
+	joinCmd = fmt.Sprintf("%s --cri-socket \"npipe:////./pipe/containerd-containerd\"", joinCmd)
+
+	return joinCmd, nil
+
 }
 
 // GenerateToken creates a token and returns the appropriate kubeadm join command to run, or the already existing token
@@ -931,6 +1020,12 @@ func (k *Bootstrapper) UpdateCluster(cfg config.ClusterConfig) error {
 
 // UpdateNode updates new or existing node.
 func (k *Bootstrapper) UpdateNode(cfg config.ClusterConfig, n config.Node, r cruntime.Manager) error {
+	// skip if the node is a windows node
+	if n.OS == "windows" {
+		klog.Infof("skipping node %v update, as it is a windows node", n)
+		return nil
+	}
+
 	klog.Infof("updating node %v ...", n)
 
 	kubeletCfg, err := bsutil.NewKubeletConfig(cfg, n, r)
