@@ -3,8 +3,11 @@ package node
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
 
 	"k8s.io/klog/v2"
 )
@@ -37,5 +40,31 @@ func cmdOut(args ...string) (string, error) {
 
 func cmd(args ...string) error {
 	_, err := cmdOut(args...)
+	return err
+}
+
+func CmdOutSSH(client *ssh.Client, script string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", script)
+	klog.Infof("[executing] : %v", command)
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	err = session.Run(command)
+	klog.Infof("[stdout =====>] : %s", stdout.String())
+	klog.Infof("[stderr =====>] : %s", stderr.String())
+	return stdout.String(), err
+}
+
+func cmdSSH(client *ssh.Client, args ...string) error {
+	script := strings.Join(args, " ")
+	_, err := CmdOutSSH(client, script)
 	return err
 }

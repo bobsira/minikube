@@ -442,6 +442,7 @@ func addHostAliasCommand(name string, record string, sudo bool, path string) *ex
 
 func AddHostAliasWindows(controlPlaneIP string, hostDriverIP string) (string, error) {
 	// log controlPlaneIP
+	out.Step(style.Provisioning, "Adding host alias for control plane ...")
 	klog.Infof("controlPlaneIP: %s", controlPlaneIP)
 	path := "C:\\Windows\\System32\\drivers\\etc\\hosts"
 	psScript := handleHostScriptCommand(controlPlaneIP, path)

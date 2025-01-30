@@ -753,6 +753,7 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 }
 
 func (k *Bootstrapper) SetMinikubeFolderErrorScript(hostDriverIP string) (string, error) {
+	out.Step(style.Provisioning, "Setting up minikube certificates folder...")
 	script := fmt.Sprintf(
 		`mkdir c:\var\lib\minikube\certs; Copy-Item C:\etc\kubernetes\pki\ca.crt -Destination C:\var\lib\Minikube\Certs; Remove-Item C:\etc\kubernetes\pki\ca.crt`)
 
@@ -784,8 +785,8 @@ func (k *Bootstrapper) SetMinikubeFolderErrorScript(hostDriverIP string) (string
 }
 
 // JoinCluster adds new node to an existing cluster.
-func (k *Bootstrapper) JoinClusterWindows(hostDriverIP string, cc config.ClusterConfig, n config.Node, joinCmd string) (string, error) {
-	// define the path to set location
+func (k *Bootstrapper) JoinClusterWindows(hostDriverIP string, cc config.ClusterConfig, n config.Node, joinCmd string, timeout time.Duration) (string, error) {
+	// Define the path to set location
 	setLocationPath := `Set-Location -Path "C:\k"`
 
 	// Form the script to be executed
@@ -804,19 +805,51 @@ func (k *Bootstrapper) JoinClusterWindows(hostDriverIP string, cc config.Cluster
 
 	// Add port 22 to the IP
 	hostDriverIP = hostDriverIP + ":22"
-	// Log the IP
 	klog.Infof("hostDriverIP: %s", hostDriverIP)
 
-	client, err := ssh.Dial("tcp", hostDriverIP, config)
-	if err != nil {
-		klog.Warningf("Failed to connect: %v", err)
-		return "", err
+	// this need to be explored more to see if we can make it better
+	// Create channels for result and errors
+	resultChan := make(chan string, 1)
+	errorChan := make(chan error, 1)
+
+	go func() {
+		client, err := ssh.Dial("tcp", hostDriverIP, config)
+		if err != nil {
+			klog.Warningf("Failed to connect: %v", err)
+			errorChan <- err
+			return
+		}
+		defer client.Close()
+
+		// Execute the script on the remote Windows node
+		output, err := machine.CmdOut(client, psScript)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+
+		resultChan <- output
+	}()
+
+	if timeout > 0 {
+		// If timeout is set, enforce it
+		select {
+		case result := <-resultChan:
+			return result, nil
+		case err := <-errorChan:
+			return "", err
+		case <-time.After(timeout):
+			return "", fmt.Errorf("operation timed out after %s", timeout)
+		}
+	} else {
+		// If no timeout is set, just wait for result or error
+		select {
+		case result := <-resultChan:
+			return result, nil
+		case err := <-errorChan:
+			return "", err
+		}
 	}
-	defer client.Close()
-
-	// Execute the script on the remote Windows node
-	return machine.CmdOut(client, psScript)
-
 }
 
 // JoinCluster adds new node to an existing cluster.
@@ -862,6 +895,9 @@ func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, er
 
 	// append the cri-socket flag to the join command for windows
 	joinCmd = fmt.Sprintf("%s --cri-socket \"npipe:////./pipe/containerd-containerd\"", joinCmd)
+
+	// append --v=5 to the join command for windows
+	joinCmd = fmt.Sprintf("%s --v=5", joinCmd)
 
 	return joinCmd, nil
 

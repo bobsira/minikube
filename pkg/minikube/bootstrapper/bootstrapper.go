@@ -42,7 +42,7 @@ type Bootstrapper interface {
 	DeleteCluster(config.KubernetesConfig) error
 	WaitForNode(config.ClusterConfig, config.Node, time.Duration) error
 	SetMinikubeFolderErrorScript(string) (string, error)
-	JoinClusterWindows(string, config.ClusterConfig, config.Node, string) (string, error)
+	JoinClusterWindows(string, config.ClusterConfig, config.Node, string, time.Duration) (string, error)
 	JoinCluster(config.ClusterConfig, config.Node, string) error
 	UpdateNode(config.ClusterConfig, config.Node, cruntime.Manager) error
 	GenerateTokenWindows(config.ClusterConfig) (string, error)

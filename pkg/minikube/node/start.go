@@ -361,6 +361,7 @@ func startPrimaryControlPlane(starter Starter, cr cruntime.Manager) (*kubeconfig
 func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrapper.Bootstrapper) error {
 	start := time.Now()
 	klog.Infof("joinCluster: %+v", starter.Cfg)
+	out.Step(style.Waiting, "Joining {{.name}} to the cluster", out.V{"name": starter.Node.Name})
 	defer func() {
 		klog.Infof("duration metric: took %s to joinCluster", time.Since(start))
 	}()
@@ -397,9 +398,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 		}
 	}
 
-	// log the join command
 	klog.Infof("join command: %s", joinCmd)
-	// making the to test the machine code
 
 	join := func() error {
 		klog.Infof("trying to join %s node %q to cluster: %+v", role, starter.Node.Name, starter.Node)
@@ -425,7 +424,10 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 			}
 			klog.Infof("Driver IP: %s", driverIP)
 
-			if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd); err != nil {
+			// Call with a timeout of 30 seconds
+			timeout := 30 * time.Second
+
+			if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd, timeout); err != nil {
 				klog.Infof("%s node failed to join cluster, will retry: %v", role, err)
 				klog.Infof("command result: %s", commandResult)
 
@@ -435,7 +437,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 				} else {
 					klog.Infof("command result: %s", cmd)
 					// retry the join command
-					if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd); err != nil {
+					if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd, 0); err != nil {
 						klog.Errorf("error retrying join command: %v, command result: %s", err, commandResult)
 						return err
 					}
@@ -1165,7 +1167,7 @@ To see benchmarks checkout https://minikube.sigs.k8s.io/docs/benchmarks/cpuusage
 
 // ValidWindowsOSVersions lists the supported Windows OS versions
 func ValidWindowsOSVersions() map[string]bool {
-	return map[string]bool{"2019": true, "2022": true}
+	return map[string]bool{"2019": true, "2022": true, "2025": true}
 }
 
 // ValidOS lists the supported OSes
