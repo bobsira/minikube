@@ -483,11 +483,7 @@ func TestValidateWindowsOSVersion(t *testing.T) {
 		errorMsg  string
 	}{
 		{
-			osVersion: "2019",
-			errorMsg:  "",
-		},
-		{
-			osVersion: "2022",
+			osVersion: "2025",
 			errorMsg:  "",
 		},
 		{
