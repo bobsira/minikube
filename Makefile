@@ -14,7 +14,7 @@
 
 # Bump these on release - and please check ISO_VERSION for correctness.
 VERSION_MAJOR ?= 1
-VERSION_MINOR ?= 34
+VERSION_MINOR ?= 35
 VERSION_BUILD ?= 0
 RAW_VERSION=$(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_BUILD)
 VERSION ?= v$(RAW_VERSION)
@@ -24,7 +24,7 @@ KIC_VERSION ?= $(shell grep -E "Version =" pkg/drivers/kic/types.go | cut -d \" 
 HUGO_VERSION ?= $(shell grep -E "HUGO_VERSION = \"" netlify.toml | cut -d \" -f2)
 
 # Default to .0 for higher cache hit rates, as build increments typically don't require new ISO versions
-ISO_VERSION ?= v1.34.0-1726156389-19616
+ISO_VERSION ?= v1.35.0
 
 # Dashes are valid in semver, but not Linux packaging. Use ~ to delimit alpha/beta
 DEB_VERSION ?= $(subst -,~,$(RAW_VERSION))
@@ -35,9 +35,12 @@ RPM_REVISION ?= 0
 
 # used by hack/jenkins/release_build_and_upload.sh and KVM_BUILD_IMAGE, see also BUILD_IMAGE below
 # update this only by running `make update-golang-version`
-GO_VERSION ?= 1.23.0
+GO_VERSION ?= 1.23.4
+# set GOTOOLCHAIN to GO_VERSION to override any toolchain version specified in
+# go.mod (ref: https://go.dev/doc/toolchain#GOTOOLCHAIN)
+export GOTOOLCHAIN := go$(GO_VERSION)
 # update this only by running `make update-golang-version`
-GO_K8S_VERSION_PREFIX ?= v1.32.0
+GO_K8S_VERSION_PREFIX ?= v1.33.0
 
 # replace "x.y.0" => "x.y". kube-cross and go.dev/dl use different formats for x.y.0 go versions
 KVM_GO_VERSION ?= $(GO_VERSION:.0=)
@@ -79,7 +82,7 @@ MINIKUBE_RELEASES_URL=https://github.com/kubernetes/minikube/releases/download
 KERNEL_VERSION ?= 5.10.207
 # latest from https://github.com/golangci/golangci-lint/releases
 # update this only by running `make update-golint-version`
-GOLINT_VERSION ?= v1.61.0
+GOLINT_VERSION ?= v1.64.5
 # Limit number of default jobs, to avoid the CI builds running out of memory
 GOLINT_JOBS ?= 4
 # see https://github.com/golangci/golangci-lint#memory-usage-of-golangci-lint
@@ -117,7 +120,7 @@ endif
 
 # gvisor tag to automatically push changes to
 # to update minikubes default, update deploy/addons/gvisor
-GVISOR_TAG ?= v0.0.1
+GVISOR_TAG ?= v0.0.2
 
 # auto-pause-hook tag to push changes to
 AUTOPAUSE_HOOK_TAG ?= v0.0.5
@@ -356,12 +359,12 @@ test-pkg/%: ## Trigger packaging test
 .PHONY: all
 all: cross drivers e2e-cross cross-tars exotic retro out/gvisor-addon ## Build all different minikube components
 
+# After https://github.com/kubernetes/minikube/issues/19959 is fixed kvm2-arm64 can be added back
 .PHONY: drivers
 drivers: ## Build Hyperkit and KVM2 drivers
 drivers: docker-machine-driver-hyperkit \
 	 docker-machine-driver-kvm2 \
-	 out/docker-machine-driver-kvm2-amd64 \
-	 out/docker-machine-driver-kvm2-arm64
+	 out/docker-machine-driver-kvm2-amd64
 
 
 .PHONY: docker-machine-driver-hyperkit
@@ -556,8 +559,8 @@ out/docs/minikube.md: $(shell find "cmd") $(shell find "pkg/minikube/constants")
 debs: out/minikube_$(DEB_VERSION)-$(DEB_REVISION)_amd64.deb \
 	  out/minikube_$(DEB_VERSION)-$(DEB_REVISION)_arm64.deb \
 	  out/docker-machine-driver-kvm2_$(DEB_VERSION).deb \
-	  out/docker-machine-driver-kvm2_$(DEB_VERSION)-$(DEB_REVISION)_amd64.deb \
-	  out/docker-machine-driver-kvm2_$(DEB_VERSION)-$(DEB_REVISION)_arm64.deb
+	  out/docker-machine-driver-kvm2_$(DEB_VERSION)-$(DEB_REVISION)_amd64.deb
+	#   out/docker-machine-driver-kvm2_$(DEB_VERSION)-$(DEB_REVISION)_arm64.deb
 
 .PHONY: deb_version
 deb_version:
@@ -835,13 +838,17 @@ update-yearly-leaderboard:
 	hack/yearly-leaderboard.sh
 
 out/docker-machine-driver-kvm2: out/docker-machine-driver-kvm2-$(GOARCH)
+# skipping kvm2-arm64 till https://github.com/kubernetes/minikube/issues/19959 is fixed
+ifneq ($(GOARCH),arm64)
 	$(if $(quiet),@echo "  CP       $@")
 	$(Q)cp $< $@
+endif
 
 out/docker-machine-driver-kvm2-x86_64: out/docker-machine-driver-kvm2-amd64
 	$(if $(quiet),@echo "  CP       $@")
 	$(Q)cp $< $@
 
+#  https://github.com/kubernetes/minikube/issues/19959
 out/docker-machine-driver-kvm2-aarch64: out/docker-machine-driver-kvm2-arm64
 	$(if $(quiet),@echo "  CP       $@")
 	$(Q)cp $< $@
@@ -902,21 +909,22 @@ install-kvm-driver: out/docker-machine-driver-kvm2  ## Install KVM Driver
 
 
 out/docker-machine-driver-kvm2-arm64:
-ifeq ($(MINIKUBE_BUILD_IN_DOCKER),y)
-	docker image inspect -f '{{.Id}} {{.RepoTags}}' $(KVM_BUILD_IMAGE_ARM64) || $(MAKE) kvm-image-arm64
-	$(call DOCKER,$(KVM_BUILD_IMAGE_ARM64),/usr/bin/make $@ COMMIT=$(COMMIT))
-else
-	$(if $(quiet),@echo "  GO       $@")
-	$(Q)GOARCH=arm64 \
-	go build \
-		-buildvcs=false \
-		-installsuffix "static" \
-		-ldflags="$(KVM2_LDFLAGS)" \
-		-tags "libvirt_without_lxc" \
-		-o $@ \
-		k8s.io/minikube/cmd/drivers/kvm
-endif
-	chmod +X $@
+	@echo "skipping kvm2-arm64 till https://github.com/kubernetes/minikube/issues/19959 is fixed"
+# ifeq ($(MINIKUBE_BUILD_IN_DOCKER),y)
+# 	docker image inspect -f '{{.Id}} {{.RepoTags}}' $(KVM_BUILD_IMAGE_ARM64) || $(MAKE) kvm-image-arm64
+# 	$(call DOCKER,$(KVM_BUILD_IMAGE_ARM64),/usr/bin/make $@ COMMIT=$(COMMIT))
+# else
+# 	$(if $(quiet),@echo "  GO       $@")
+# 	$(Q)GOARCH=arm64 \
+# 	go build \
+# 		-buildvcs=false \
+# 		-installsuffix "static" \
+# 		-ldflags="$(KVM2_LDFLAGS)" \
+# 		-tags "libvirt_without_lxc" \
+# 		-o $@ \
+# 		k8s.io/minikube/cmd/drivers/kvm
+# endif
+# 	chmod +X $@
 
 out/docker-machine-driver-kvm2-%:
 ifeq ($(MINIKUBE_BUILD_IN_DOCKER),y)
@@ -936,7 +944,7 @@ endif
 	chmod +X $@
 
 
-site/themes/docsy/assets/vendor/bootstrap/package.js: ## update the website docsy theme git submodule 
+site/themes/docsy/assets/vendor/bootstrap/package.js: ## update the website docsy theme git submodule
 	git submodule update -f --init
 
 .PHONY: out/hugo/hugo
@@ -1005,7 +1013,7 @@ compare: out/mkcmp out/minikube
 	mv out/minikube out/master.minikube
 	git checkout $(CURRENT_GIT_BRANCH)
 	out/mkcmp out/master.minikube out/$(CURRENT_GIT_BRANCH).minikube
-	
+
 
 .PHONY: help
 help:
@@ -1222,7 +1230,12 @@ update-nvidia-device-plugin-version:
 	(cd hack/update/nvidia_device_plugin_version && \
 	 go run update_nvidia_device_plugin_version.go)
 
-.PHONY: update-nerctld-version
+.PHONY: update-amd-gpu-device-plugin-version
+update-amd-gpu-device-plugin-version:
+	(cd hack/update/amd_device_plugin_version && \
+	 go run update_amd_device_plugin_version.go)
+
+.PHONY: update-nerdctld-version
 update-nerdctld-version:
 	(cd hack/update/nerdctld_version && \
 	 go run update_nerdctld_version.go)
@@ -1247,6 +1260,11 @@ update-yakd-version:
 	(cd hack/update/yakd_version && \
 	 go run update_yakd_version.go)
 
+.PHONY: update-kube-registry-proxy-version
+update-kube-registry-proxy-version:
+	(cd hack/update/kube_registry_proxy_version && \
+	 go run update_kube_registry_proxy_version.go)
+
 .PHONY: get-dependency-verison
 get-dependency-version:
 	@(cd hack/update/get_version && \
@@ -1255,3 +1273,8 @@ get-dependency-version:
 .PHONY: generate-licenses
 generate-licenses:
 	./hack/generate_licenses.sh
+
+.PHONY: update-kube-vip-version
+update-kube-vip-version:
+	(cd hack/update/kube_vip_version && \
+	 go run update_kube_vip_version.go)

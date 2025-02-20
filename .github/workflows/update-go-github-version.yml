@@ -6,7 +6,7 @@ on:
     - cron: "0 10 * * 1"
 env:
   GOPROXY: https://proxy.golang.org
-  GO_VERSION: '1.23.0'
+  GO_VERSION: '1.23.4'
 permissions:
   contents: read
 
@@ -14,8 +14,8 @@ jobs:
   bump-go-github-version:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
         with:
           go-version: ${{env.GO_VERSION}}
       - name: Bump go-github version
@@ -30,7 +30,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
       - name: Create PR
         if: ${{ steps.bumpGoGithub.outputs.changes != '' }}
-        uses: peter-evans/create-pull-request@d121e62763d8cc35b5fb1710e887d6e69a52d3a4
+        uses: peter-evans/create-pull-request@67ccf781d68cd99b580ae25a5c18a1cc84ffff1f
         with:
           token: ${{ secrets.MINIKUBE_BOT_PAT }}
           commit-message: 'Update go-github from ${{ steps.bumpGoGithub.outputs.OLD_VERSION }} to ${{ steps.bumpGoGithub.outputs.NEW_VERSION }}'
