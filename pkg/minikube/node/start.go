@@ -147,16 +147,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		}
 	} else {
 		out.Step(style.Provisioning, "Configuring Windows node...")
-		// log  starter.Host.Driver.GetIP()
-		driverIP, err := starter.Host.Driver.GetIP()
-		if err != nil {
-			klog.Errorf("Unable to get driver IP: %v", err)
-		}
-		klog.Infof("Driver IP: %s", driverIP)
-		// log
-		// add "control-plane.minikube.internal"
-		// hack for windows node to find the primary control-plane node via it's fully qualified domain name
-		if stdout, err := machine.AddHostAliasWindows(constants.MasterNodeIP, driverIP); err != nil {
+		if stdout, err := machine.AddHostAliasWindows(starter.Host, constants.MasterNodeIP); err != nil {
 			klog.Warningf("Unable to add host alias: %v", err)
 		} else {
 			klog.Infof("Host alias added: %s", stdout)
@@ -425,19 +416,19 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 			klog.Infof("Driver IP: %s", driverIP)
 
 			// Call with a timeout of 30 seconds
-			timeout := 30 * time.Second
+			timeout := 20 * time.Second
 
-			if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd, timeout); err != nil {
+			if commandResult, err := bs.JoinClusterWindows(starter.Host, *starter.Cfg, *starter.Node, joinCmd, timeout); err != nil {
 				klog.Infof("%s node failed to join cluster, will retry: %v", role, err)
 				klog.Infof("command result: %s", commandResult)
 
 				// sort out the certificates issues
-				if cmd, err := bs.SetMinikubeFolderErrorScript(driverIP); err != nil {
+				if cmd, err := bs.SetupMinikubeCert(starter.Host); err != nil {
 					klog.Errorf("error setting minikube folder error script: %v", err)
 				} else {
 					klog.Infof("command result: %s", cmd)
 					// retry the join command
-					if commandResult, err := bs.JoinClusterWindows(driverIP, *starter.Cfg, *starter.Node, joinCmd, 0); err != nil {
+					if commandResult, err := bs.JoinClusterWindows(starter.Host, *starter.Cfg, *starter.Node, joinCmd, 0); err != nil {
 						klog.Errorf("error retrying join command: %v, command result: %s", err, commandResult)
 						return err
 					}
@@ -1176,7 +1167,3 @@ func ValidWindowsOSVersions() map[string]bool {
 func ValidOS() []string {
 	return []string{"linux", "windows"}
 }
-
-///
-//
-//

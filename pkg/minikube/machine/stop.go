@@ -58,10 +58,6 @@ func stop(h *host.Host) error {
 
 	if driver.NeedsShutdown(h.DriverName) {
 		klog.Infof("GuestOS: %s", h.GuestOS)
-		if h.GuestOS == "windows" {
-			// short circuit for windows and exit this branch
-			return nil
-		}
 		if err := trySSHPowerOff(h); err != nil {
 			return errors.Wrap(err, "ssh power off")
 		}

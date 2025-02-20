@@ -19,6 +19,7 @@ package bootstrapper
 import (
 	"time"
 
+	"github.com/docker/machine/libmachine/host"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/images"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
@@ -41,8 +42,8 @@ type Bootstrapper interface {
 	UpdateCluster(config.ClusterConfig) error
 	DeleteCluster(config.KubernetesConfig) error
 	WaitForNode(config.ClusterConfig, config.Node, time.Duration) error
-	SetMinikubeFolderErrorScript(string) (string, error)
-	JoinClusterWindows(string, config.ClusterConfig, config.Node, string, time.Duration) (string, error)
+	SetupMinikubeCert(*host.Host) (string, error)
+	JoinClusterWindows(*host.Host, config.ClusterConfig, config.Node, string, time.Duration) (string, error)
 	JoinCluster(config.ClusterConfig, config.Node, string) error
 	UpdateNode(config.ClusterConfig, config.Node, cruntime.Manager) error
 	GenerateTokenWindows(config.ClusterConfig) (string, error)

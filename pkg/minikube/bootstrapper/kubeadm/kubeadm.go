@@ -35,9 +35,9 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/docker/machine/libmachine"
+	"github.com/docker/machine/libmachine/host"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
-	"golang.org/x/crypto/ssh"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -752,77 +752,49 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 	return nil
 }
 
-func (k *Bootstrapper) SetMinikubeFolderErrorScript(hostDriverIP string) (string, error) {
-	out.Step(style.Provisioning, "Setting up minikube certificates folder...")
-	script := fmt.Sprintf(
-		`mkdir c:\var\lib\minikube\certs; Copy-Item C:\etc\kubernetes\pki\ca.crt -Destination C:\var\lib\Minikube\Certs; Remove-Item C:\etc\kubernetes\pki\ca.crt`)
+//
+//
 
-	// Escape double quotes for remote execution
+func (k *Bootstrapper) SetupMinikubeCert(host *host.Host) (string, error) {
+	out.Step(style.Provisioning, "Setting up minikube certificates folder...")
+
+	certsDir := `C:\var\lib\minikube\certs`
+	k8sPkiDir := `C:\etc\kubernetes\pki`
+	caCert := `ca.crt`
+
+	script := fmt.Sprintf(
+		`mkdir %s; `+
+			`Copy-Item %s\%s -Destination %s; `+
+			`Remove-Item %s\%s`,
+		certsDir, k8sPkiDir, caCert, certsDir, k8sPkiDir, caCert,
+	)
+
 	script = strings.ReplaceAll(script, `"`, `\"`)
 
-	config := &ssh.ClientConfig{
-		User: "Administrator",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("password"),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", script)
+	klog.Infof("[executing] : %v", command)
 
-	// Add port 22 to the IP
-	hostDriverIP = hostDriverIP + ":22"
-	// Log the IP
-	klog.Infof("hostDriverIP: %s", hostDriverIP)
+	host.RunSSHCommand(command)
 
-	client, err := ssh.Dial("tcp", hostDriverIP, config)
-	if err != nil {
-		klog.Warningf("Failed to connect: %v", err)
-		return "", err
-	}
-	defer client.Close()
-
-	// Execute the script on the remote Windows node
-	return machine.CmdOut(client, script)
+	return "", nil
 }
 
-// JoinCluster adds new node to an existing cluster.
-func (k *Bootstrapper) JoinClusterWindows(hostDriverIP string, cc config.ClusterConfig, n config.Node, joinCmd string, timeout time.Duration) (string, error) {
-	// Define the path to set location
+func (k *Bootstrapper) JoinClusterWindows(host *host.Host, cc config.ClusterConfig, n config.Node, joinCmd string, timeout time.Duration) (string, error) {
 	setLocationPath := `Set-Location -Path "C:\k"`
 
-	// Form the script to be executed
 	psScript := fmt.Sprintf("%s; %s", setLocationPath, joinCmd)
 
-	// Escape double quotes inside the script
 	psScript = strings.ReplaceAll(psScript, `"`, `\"`)
 
-	config := &ssh.ClientConfig{
-		User: "Administrator",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("password"),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", psScript)
+	klog.Infof("[executing] : %v", command)
 
-	// Add port 22 to the IP
-	hostDriverIP = hostDriverIP + ":22"
-	klog.Infof("hostDriverIP: %s", hostDriverIP)
-
-	// this need to be explored more to see if we can make it better
-	// Create channels for result and errors
+	// TODO: Explore how to make this better; channels for result and errors for now exist
 	resultChan := make(chan string, 1)
 	errorChan := make(chan error, 1)
 
 	go func() {
-		client, err := ssh.Dial("tcp", hostDriverIP, config)
-		if err != nil {
-			klog.Warningf("Failed to connect: %v", err)
-			errorChan <- err
-			return
-		}
-		defer client.Close()
-
-		// Execute the script on the remote Windows node
-		output, err := machine.CmdOut(client, psScript)
+		output, err := host.RunSSHCommand(command)
 		if err != nil {
 			errorChan <- err
 			return

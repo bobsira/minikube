@@ -17,7 +17,6 @@ limitations under the License.
 package machine
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -28,8 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/blang/semver/v4"
 	"github.com/docker/machine/libmachine"
@@ -440,68 +437,25 @@ func addHostAliasCommand(name string, record string, sudo bool, path string) *ex
 	return exec.Command("/bin/bash", "-c", script)
 }
 
-func AddHostAliasWindows(controlPlaneIP string, hostDriverIP string) (string, error) {
-	// log controlPlaneIP
+func AddHostAliasWindows(host *host.Host, controlPlaneIP string) (string, error) {
 	out.Step(style.Provisioning, "Adding host alias for control plane ...")
-	klog.Infof("controlPlaneIP: %s", controlPlaneIP)
-	path := "C:\\Windows\\System32\\drivers\\etc\\hosts"
-	psScript := handleHostScriptCommand(controlPlaneIP, path)
 
-	// Escape double quotes inside the script
+	path := "C:\\Windows\\System32\\drivers\\etc\\hosts"
+	entry := fmt.Sprintf("\t%s\tcontrol-plane.minikube.internal", controlPlaneIP)
+
+	psScript := fmt.Sprintf(
+		`$hostsContent = Get-Content -Path "%s" -Raw -ErrorAction SilentlyContinue; `+
+			`if ($hostsContent -notmatch [regex]::Escape("%s")) { `+
+			`Add-Content -Path "%s" -Value "%s" -Force | Out-Null }`,
+		path, entry, path, entry,
+	)
+
 	psScript = strings.ReplaceAll(psScript, `"`, `\"`)
 
-	config := &ssh.ClientConfig{
-		User: "Administrator",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("password"),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	// add 22 port to ip
-	hostDriverIP = hostDriverIP + ":22"
-	// log the ip
-	klog.Infof("hostDriverIP: %s", hostDriverIP)
-
-	client, err := ssh.Dial("tcp", hostDriverIP, config)
-	if err != nil {
-		klog.Warningf("Failed to connect: %v", err)
-	}
-	defer client.Close()
-
-	return CmdOut(client, psScript)
-}
-
-func handleHostScriptCommand(ip string, path string) string {
-	entry := fmt.Sprintf("\t%s\tcontrol-plane.minikube.internal", ip)
-	script := fmt.Sprintf(
-		`$hostsContent = Get-Content -Path "%s" -Raw -ErrorAction SilentlyContinue; if ($hostsContent -notmatch [regex]::Escape("%s")) { Add-Content -Path "%s" -Value "%s" -Force | Out-Null }`,
-		path, entry, path, entry)
-	return script
-}
-
-func CmdOut(client *ssh.Client, script string) (string, error) {
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", script)
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", psScript)
 	klog.Infof("[executing] : %v", command)
 
-	var stdout, stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
+	host.RunSSHCommand(command)
 
-	err = session.Run(command)
-	klog.Infof("[stdout =====>] : %s", stdout.String())
-	klog.Infof("[stderr =====>] : %s", stderr.String())
-	return stdout.String(), err
-}
-
-func cmd(client *ssh.Client, args ...string) error {
-	script := strings.Join(args, " ")
-	_, err := CmdOut(client, script)
-	return err
+	return "", nil
 }
