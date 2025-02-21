@@ -86,7 +86,7 @@ type LocalClient struct {
 	flock        *fslock.Lock
 }
 
-// DefineGuest is a method required by the libmachine.API interface.
+// DefineGuest sets/tracks the guest OS for the host
 func (api *LocalClient) DefineGuest(h *host.Host) {
 	api.legacyClient.DefineGuest(h)
 }
