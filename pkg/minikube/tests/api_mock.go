@@ -68,8 +68,13 @@ func (api *MockAPI) Close() error {
 	return nil
 }
 
+// DefineGuest sets/tracks the guest OS for the host
+func (api *MockAPI) DefineGuest(h *host.Host) {
+	api.Logf("MockAPI.DefineGuest: guest=%q", h.GuestOS)
+}
+
 // NewHost creates a new host.Host instance.
-func (api *MockAPI) NewHost(drvName string, rawDriver []byte) (*host.Host, error) {
+func (api *MockAPI) NewHost(drvName string, guestOS string, rawDriver []byte) (*host.Host, error) {
 	var driver MockDriver
 	if err := json.Unmarshal(rawDriver, &driver); err != nil {
 		return nil, errors.Wrap(err, "error unmarshalling json")
@@ -80,6 +85,7 @@ func (api *MockAPI) NewHost(drvName string, rawDriver []byte) (*host.Host, error
 		RawDriver:  rawDriver,
 		Driver:     &MockDriver{},
 		Name:       fmt.Sprintf("mock-machine-%.8f", rand.Float64()),
+		GuestOS:    guestOS,
 		HostOptions: &host.Options{
 			AuthOptions:  &auth.Options{},
 			SwarmOptions: &swarm.Options{},

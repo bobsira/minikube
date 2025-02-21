@@ -57,6 +57,7 @@ func stop(h *host.Host) error {
 	}
 
 	if driver.NeedsShutdown(h.DriverName) {
+		klog.Infof("GuestOS: %s", h.GuestOS)
 		if err := trySSHPowerOff(h); err != nil {
 			return errors.Wrap(err, "ssh power off")
 		}

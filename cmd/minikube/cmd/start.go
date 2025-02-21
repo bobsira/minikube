@@ -356,13 +356,6 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 		os.Exit(0)
 	}
 
-	// If preloadWindowsIso flag is true then cache the windows ISO
-	if viper.GetBool(preloadWindowsIso) {
-		if err := download.WindowsISO(viper.GetString(windowsNodeVersion)); err != nil {
-			return node.Starter{}, errors.Wrap(err, "Failed to cache Windows ISO")
-		}
-	}
-
 	if driver.IsVM(driverName) && !driver.IsSSH(driverName) {
 		url, err := download.ISO(viper.GetStringSlice(isoURL), cmd.Flags().Changed(isoURL))
 		if err != nil {
@@ -499,6 +492,7 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 				KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
 				ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
 				Worker:            true,
+				OS:                "linux",
 			}
 			if i < numCPNodes { // starter node is also counted as (primary) cp node
 				n.ControlPlane = true
@@ -506,8 +500,28 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 		}
 
 		out.Ln("") // extra newline for clarity on the command line
+		// 1st call
 		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
-			return nil, errors.Wrap(err, "adding node")
+			return nil, errors.Wrap(err, "adding linux node")
+		}
+	}
+
+	// start windows node. trigger windows node start only if windows node version is set at the time of minikube start
+	if cmd.Flags().Changed(windowsNodeVersion) {
+		// TODO: if windows node version is set to windows server 2022 then the windows node name should be minikube-ws2022
+		nodeName := node.Name(numNodes + 1)
+		n := config.Node{
+			Name:              nodeName,
+			Port:              starter.Cfg.APIServerPort,
+			KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
+			ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
+			Worker:            true,
+			OS:                "windows",
+		}
+
+		out.Ln("") // extra newline for clarity on the command line
+		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
+			return nil, errors.Wrap(err, "adding windows node")
 		}
 	}
 
@@ -1315,9 +1329,6 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 		if err := validateWindowsOSVersion(viper.GetString(windowsNodeVersion)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
 		}
-
-		// set preloadWindowsIso to true since we need to download the windows ISO file
-		viper.Set(preloadWindowsIso, true)
 
 	}
 
