@@ -187,6 +187,14 @@ func runStart(cmd *cobra.Command, _ []string) {
 		out.WarningT("Profile name '{{.name}}' is not valid", out.V{"name": ClusterFlagValue()})
 		exit.Message(reason.Usage, "Only alphanumeric and dashes '-' are permitted. Minimum 2 characters, starting with alphanumeric.")
 	}
+
+	// change the driver to hyperv, cni to flannel and container runtime to containerd if we have --node-os=windows
+	if cmd.Flags().Changed(nodeOS) {
+		viper.Set("driver", driver.HyperV)
+		viper.Set("cni", "flannel")
+		viper.Set(containerRuntime, constants.Containerd)
+
+	}
 	existing, err := config.Load(ClusterFlagValue())
 	if err != nil && !config.IsNotExist(err) {
 		kind := reason.HostConfigLoad
@@ -467,6 +475,13 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 	// target total and number of control-plane nodes
 	numCPNodes := 1
 	numNodes := viper.GetInt(nodes)
+	// if we have -node-os flag set, then nodes flag will be set to 2
+	//  it means one of the nodes is a control-plane node and the other is a windows worker node
+	// so we need to reduce the numNodes by 1
+	if cmd.Flags().Changed(nodeOS) {
+		numNodes--
+	}
+
 	if existing != nil {
 		numCPNodes = 0
 		for _, n := range existing.Nodes {
@@ -506,8 +521,10 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 		}
 	}
 
-	// start windows node. trigger windows node start only if windows node version is set at the time of minikube start
-	if cmd.Flags().Changed(windowsNodeVersion) {
+	// we currently trigger the windows node start if the user has set the --windows-node-version or --node-os flag
+	// we might need to get rid of --windows-node-version in the future and just use --node-os flag
+	// start windows node. trigger windows node start  if windows node version or node node os is set at the time of minikube start
+	if cmd.Flags().Changed(windowsNodeVersion) || cmd.Flags().Changed(nodeOS) {
 		// TODO: if windows node version is set to windows server 2022 then the windows node name should be minikube-ws2022
 		nodeName := node.Name(numNodes + 1)
 		n := config.Node{
@@ -1332,6 +1349,16 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 
 	}
 
+	if cmd.Flags().Changed(nodeOS) {
+		if err := validMultiNodeOS(viper.GetString(nodeOS)); err != nil {
+			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
+		}
+
+		if viper.GetInt(nodes) != 2 {
+			exit.Message(reason.Usage, "The --nodes flag must be set to 2 when using --node-os")
+		}
+	}
+
 	if cmd.Flags().Changed(staticIP) {
 		if err := validateStaticIP(viper.GetString(staticIP), drvName, viper.GetString(subnet)); err != nil {
 			exit.Message(reason.Usage, "{{.err}}", out.V{"err": err})
@@ -1489,6 +1516,24 @@ func validateOSandVersion(os, version string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// validateMultiNodeOS validates the supplied OS for multiple nodes
+func validMultiNodeOS(osString string) error {
+	if !strings.HasPrefix(osString, "[") || !strings.HasSuffix(osString, "]") {
+		return errors.Errorf("invalid OS string format: must be enclosed in [ ]")
+	}
+
+	osString = strings.Trim(osString, "[]")
+	osString = strings.ReplaceAll(osString, " ", "")
+
+	osValues := strings.Split(osString, ",")
+
+	if len(osValues) != 2 || osValues[0] != "linux" || osValues[1] != "windows" {
+		return errors.Errorf("invalid OS string format: must be [linux,windows]")
+	}
+
 	return nil
 }
 

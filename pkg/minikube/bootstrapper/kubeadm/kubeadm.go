@@ -872,7 +872,6 @@ func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, er
 	joinCmd = fmt.Sprintf("%s --v=5", joinCmd)
 
 	return joinCmd, nil
-
 }
 
 // GenerateToken creates a token and returns the appropriate kubeadm join command to run, or the already existing token

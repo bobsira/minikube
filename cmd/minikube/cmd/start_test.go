@@ -505,6 +505,51 @@ func TestValidateWindowsOSVersion(t *testing.T) {
 	}
 }
 
+func TestValidMultiNodeOS(t *testing.T) {
+	var tests = []struct {
+		osString string
+		errorMsg string
+	}{
+		{
+			osString: "[linux,windows]",
+			errorMsg: "",
+		},
+		{
+			osString: "[linux, windows]",
+			errorMsg: "",
+		},
+		{
+			osString: "[windows,linux]",
+			errorMsg: "invalid OS string format: must be [linux,windows]",
+		},
+		{
+			osString: "[linux]",
+			errorMsg: "invalid OS string format: must be [linux,windows]",
+		},
+		{
+			osString: "[linux,windows,mac]",
+			errorMsg: "invalid OS string format: must be [linux,windows]",
+		},
+		{
+			osString: "linux,windows",
+			errorMsg: "invalid OS string format: must be enclosed in [ ]",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.osString, func(t *testing.T) {
+			got := validMultiNodeOS(test.osString)
+			gotError := ""
+			if got != nil {
+				gotError = got.Error()
+			}
+			if gotError != test.errorMsg {
+				t.Errorf("validMultiNodeOS(osString=%v): got %v, expected %v", test.osString, gotError, test.errorMsg)
+			}
+		})
+	}
+}
+
 func TestIsTwoDigitSemver(t *testing.T) {
 	var tcs = []struct {
 		desc     string
