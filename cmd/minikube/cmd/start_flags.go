@@ -145,7 +145,7 @@ const (
 	gpus                    = "gpus"
 	autoPauseInterval       = "auto-pause-interval"
 	windowsNodeVersion      = "windows-node-version"
-	nodeOS                  = "node-operating-system"
+	nodeOS                  = "node-os"
 )
 
 var (
@@ -211,7 +211,7 @@ func initMinikubeFlags() {
 	startCmd.Flags().StringP(gpus, "g", "", "Allow pods to use your NVIDIA GPUs. Options include: [all,nvidia] (Docker driver with Docker container-runtime only)")
 	startCmd.Flags().Duration(autoPauseInterval, time.Minute*1, "Duration of inactivity before the minikube VM is paused (default 1m0s)")
 	startCmd.Flags().String(windowsNodeVersion, constants.DefaultWindowsNodeVersion, "The version of Windows to use for the windows node on a multi-node cluster (e.g., 2025). Currently support Windows Server 2025")
-	startCmd.Flags().StringP(nodeOS, "node-os", "", "The OS to use for the node. Currently support 'linux, windows'. If not set, it will be set to the same as the control plane node.")
+	startCmd.Flags().String(nodeOS, "node-os", "The OS to use for the node. Currently support 'linux, windows'. If not set, it will be set to the same as the control plane node.")
 
 }
 
