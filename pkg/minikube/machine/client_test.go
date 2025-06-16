@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/docker/machine/libmachine/drivers/plugin/localbinary"
+	"github.com/docker/machine/libmachine/host"
 
 	"k8s.io/minikube/pkg/minikube/driver"
 	_ "k8s.io/minikube/pkg/minikube/registry/drvs/virtualbox"
@@ -70,22 +71,30 @@ func TestLocalClientNewHost(t *testing.T) {
 	var tests = []struct {
 		description string
 		driver      string
-		guestOS     string
+		guest       host.Guest
 		rawDriver   []byte
 		err         bool
 	}{
 		{
 			description: "host vbox correct",
 			driver:      driver.VirtualBox,
-			guestOS:     "linux",
-			rawDriver:   []byte(vboxConfig),
+			guest: host.Guest{
+				Name:    "linux",
+				Version: "1.0.0",
+				URL:     "https://example.com/linux.iso",
+			},
+			rawDriver: []byte(vboxConfig),
 		},
 		{
 			description: "host vbox incorrect",
 			driver:      driver.VirtualBox,
-			guestOS:     "linux",
-			rawDriver:   []byte("?"),
-			err:         true,
+			guest: host.Guest{
+				Name:    "linux",
+				Version: "1.0.0",
+				URL:     "https://example.com/linux.iso",
+			},
+			rawDriver: []byte("?"),
+			err:       true,
 		},
 	}
 
@@ -93,7 +102,7 @@ func TestLocalClientNewHost(t *testing.T) {
 		test := test
 		t.Run(test.description, func(t *testing.T) {
 			t.Parallel()
-			host, err := c.NewHost(test.driver, test.guestOS, test.rawDriver)
+			host, err := c.NewHost(test.driver, test.guest, test.rawDriver)
 			// A few sanity checks that we can do on the host
 			if host != nil {
 				if host.DriverName != test.driver {
@@ -102,8 +111,8 @@ func TestLocalClientNewHost(t *testing.T) {
 				if host.Name != host.Driver.GetMachineName() {
 					t.Errorf("Host name is not correct.  Expected :%s, got: %s", host.Driver.GetMachineName(), host.Name)
 				}
-				if host.GuestOS != test.guestOS {
-					t.Errorf("Host guest os is not correct.  Expected :%s, got: %s", test.guestOS, host.GuestOS)
+				if host.Guest.Name != test.guest.Name {
+					t.Errorf("Host's guest os is not correct.  Expected :%s, got: %s", test.guest.Name, host.Guest.Name)
 				}
 			}
 			if err != nil && !test.err {
