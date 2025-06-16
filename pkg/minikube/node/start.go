@@ -109,8 +109,8 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 	}
 
 	// log starter.Node.OS here
-	klog.Infof("Node OS: %s", starter.Node.OS)
-	if starter.Node.OS != "windows" {
+	klog.Infof("Node OS: %s", starter.Node.Guest.Name)
+	if starter.Node.Guest.Name != "windows" {
 		// wait for preloaded tarball to finish downloading before configuring runtimes
 		waitCacheRequiredImages(&cacheGroup)
 	}
@@ -122,7 +122,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 	klog.Infof("Kubernetes version: %s", sv)
 
 	var cr cruntime.Manager
-	if starter.Node.OS != "windows" {
+	if starter.Node.Guest.Name != "windows" {
 		// configure the runtime (docker, containerd, crio) only for windows nodes
 		cr = configureRuntimes(starter.Runner, *starter.Cfg, sv)
 
@@ -141,7 +141,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		klog.Errorf("Unable to get host IP: %v", err)
 	}
 
-	if starter.Node.OS != "windows" {
+	if starter.Node.Guest.Name != "windows" {
 		if err := machine.AddHostAlias(starter.Runner, constants.HostAlias, hostIP); err != nil {
 			klog.Warningf("Unable to add host alias: %v", err)
 		}
@@ -377,7 +377,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 	var err error
 
 	// if node is a windows node, generate the join command
-	if starter.Node.OS == "windows" {
+	if starter.Node.Guest.Name == "windows" {
 		joinCmd, err = cpBs.GenerateTokenWindows(*starter.Cfg)
 		if err != nil {
 			return fmt.Errorf("error generating join token: %w", err)
@@ -393,7 +393,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 
 	join := func() error {
 		klog.Infof("trying to join %s node %q to cluster: %+v", role, starter.Node.Name, starter.Node)
-		if starter.Node.OS != "windows" {
+		if starter.Node.Guest.Name != "windows" {
 			if err := bs.JoinCluster(*starter.Cfg, *starter.Node, joinCmd); err != nil {
 				// log the error message and retry
 				klog.Errorf("%s node failed to join cluster, will retry: %v", role, err)
@@ -450,7 +450,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 		return nil
 	}
 	if err := retry.Expo(join, 10*time.Second, 3*time.Minute); err != nil {
-		if starter.Node.OS != "windows" {
+		if starter.Node.Guest.Name != "windows" {
 			return fmt.Errorf("error joining %s node %q to cluster: %w", role, starter.Node.Name, err)
 		}
 	}

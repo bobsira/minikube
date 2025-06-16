@@ -851,7 +851,7 @@ func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinC
 	return nil
 }
 
-// GenerateToken creates a token and returns the appropriate kubeadm join command to run, or the already existing token
+// GenerateTokenWindows creates a token and returns the appropriate kubeadm join command to run, or the already existing token
 func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, error) {
 	tokenCmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.InvokeKubeadm(cc.KubernetesConfig.KubernetesVersion)))
 	r, err := k.c.RunCmd(tokenCmd)
@@ -1028,7 +1028,7 @@ func (k *Bootstrapper) UpdateCluster(cfg config.ClusterConfig) error {
 // UpdateNode updates new or existing node.
 func (k *Bootstrapper) UpdateNode(cfg config.ClusterConfig, n config.Node, r cruntime.Manager) error {
 	// skip if the node is a windows node
-	if n.OS == "windows" {
+	if n.Guest.Name == "windows" {
 		klog.Infof("skipping node %v update, as it is a windows node", n)
 		return nil
 	}

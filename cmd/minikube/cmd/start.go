@@ -507,7 +507,11 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 				KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
 				ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
 				Worker:            true,
-				OS:                "linux",
+				Guest: config.Guest{
+					Name:    "linux",
+					Version: "latest",
+					URL:     "",
+				},
 			}
 			if i < numCPNodes { // starter node is also counted as (primary) cp node
 				n.ControlPlane = true
@@ -533,7 +537,11 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 			KubernetesVersion: starter.Cfg.KubernetesConfig.KubernetesVersion,
 			ContainerRuntime:  starter.Cfg.KubernetesConfig.ContainerRuntime,
 			Worker:            true,
-			OS:                "windows",
+			Guest: config.Guest{
+				Name:    "windows",
+				Version: viper.GetString(windowsNodeVersion),
+				URL:     viper.GetString(windowsVhdURL),
+			},
 		}
 
 		out.Ln("") // extra newline for clarity on the command line
@@ -1358,6 +1366,20 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 			exit.Message(reason.Usage, "The --nodes flag must be set to 2 when using --node-os")
 		}
 	}
+
+	if cmd.Flags().Changed(windowsVhdURL) {
+		if viper.GetString(windowsVhdURL) == "" {
+			// set a default URL if the user has not specified one
+			viper.Set(windowsVhdURL, constants.DefaultWindowsVhdURL)
+			exit.Message(reason.Usage, "The --windows-vhd-url flag must be set to a valid URL")
+		}
+
+		// add validation logic for the windows vhd URL
+		url := viper.GetString(windowsVhdURL)
+		if !strings.HasSuffix(url, ".vhd") && !strings.HasSuffix(url, ".vhdx") {
+			exit.Message(reason.Usage, "The --windows-vhd-url flag must point to a valid VHD or VHDX file")
+		}
+	} ////
 
 	if cmd.Flags().Changed(staticIP) {
 		if err := validateStaticIP(viper.GetString(staticIP), drvName, viper.GetString(subnet)); err != nil {

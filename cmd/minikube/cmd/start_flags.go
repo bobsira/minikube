@@ -146,6 +146,7 @@ const (
 	autoPauseInterval       = "auto-pause-interval"
 	windowsNodeVersion      = "windows-node-version"
 	nodeOS                  = "node-os"
+	windowsVhdURL           = "windows-vhd-url"
 )
 
 var (
@@ -212,6 +213,7 @@ func initMinikubeFlags() {
 	startCmd.Flags().Duration(autoPauseInterval, time.Minute*1, "Duration of inactivity before the minikube VM is paused (default 1m0s)")
 	startCmd.Flags().String(windowsNodeVersion, constants.DefaultWindowsNodeVersion, "The version of Windows to use for the windows node on a multi-node cluster (e.g., 2025). Currently support Windows Server 2025")
 	startCmd.Flags().String(nodeOS, "node-os", "The OS to use for the node. Currently support 'linux, windows'. If not set, it will be set to the same as the control plane node.")
+	startCmd.Flags().String(windowsVhdURL, constants.DefaultWindowsVhdURL, "The VHD URL to use for the windows node on a multi-node cluster. If not set, it will be set to the default Windows Server 2025 VHD URL.")
 
 }
 

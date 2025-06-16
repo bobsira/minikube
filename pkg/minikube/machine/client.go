@@ -92,13 +92,13 @@ func (api *LocalClient) DefineGuest(h *host.Host) {
 }
 
 // NewHost creates a new Host
-func (api *LocalClient) NewHost(drvName string, guestOS string, rawDriver []byte) (*host.Host, error) {
+func (api *LocalClient) NewHost(drvName string, guest host.Guest, rawDriver []byte) (*host.Host, error) {
 	def := registry.Driver(drvName)
 	if def.Empty() {
 		return nil, fmt.Errorf("driver %q does not exist", drvName)
 	}
 	if def.Init == nil {
-		return api.legacyClient.NewHost(drvName, guestOS, rawDriver)
+		return api.legacyClient.NewHost(drvName, guest, rawDriver)
 	}
 	d := def.Init()
 	err := json.Unmarshal(rawDriver, d)
@@ -111,7 +111,7 @@ func (api *LocalClient) NewHost(drvName string, guestOS string, rawDriver []byte
 		Name:          d.GetMachineName(),
 		Driver:        d,
 		DriverName:    d.DriverName(),
-		GuestOS:       guestOS,
+		Guest:         guest,
 		HostOptions: &host.Options{
 			AuthOptions: &auth.Options{
 				CertDir:          api.certsDir,
@@ -240,7 +240,7 @@ func (api *LocalClient) Create(h *host.Host) error {
 					return nil
 				}
 				// Skipped because we don't reconfigure Docker for Windows Host
-				if h.GuestOS == "windows" {
+				if h.Guest.Name == "windows" {
 					return nil
 				}
 				return provisionDockerMachine(h)
