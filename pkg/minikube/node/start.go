@@ -455,10 +455,8 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 		}
 	}
 
-	if starter.Cfg.WindowsNodeVersion != "2022" {
-		if err := cpBs.LabelAndUntaintNode(*starter.Cfg, *starter.Node); err != nil {
-			return fmt.Errorf("error applying %s node %q label: %w", role, starter.Node.Name, err)
-		}
+	if err := cpBs.LabelAndUntaintNode(*starter.Cfg, *starter.Node); err != nil {
+		return fmt.Errorf("error applying %s node %q label: %w", role, starter.Node.Name, err)
 	}
 
 	return nil

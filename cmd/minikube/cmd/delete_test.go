@@ -242,7 +242,7 @@ func main() {
 	done := make(chan struct{})
 	defer close(ch)
 
-	signal.Notify(ch, syscall.SIGHUP)
+	signal.Notify(ch, syscall.SIGTERM)
 	defer signal.Stop(ch)
 
 	go func() {
