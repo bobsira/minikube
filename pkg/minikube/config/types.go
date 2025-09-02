@@ -149,6 +149,7 @@ type Node struct {
 	ContainerRuntime  string
 	ControlPlane      bool
 	Worker            bool
+	Guest             Guest
 }
 
 // VersionedExtraOption holds information on flags to apply to a specific range
@@ -181,4 +182,10 @@ type VersionedExtraOption struct {
 type ScheduledStopConfig struct {
 	InitiationTime int64
 	Duration       time.Duration
+}
+
+type Guest struct {
+	Name    string
+	Version string
+	URL     string
 }
