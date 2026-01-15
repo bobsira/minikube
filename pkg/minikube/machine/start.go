@@ -145,7 +145,7 @@ func createHost(api libmachine.API, cfg *config.ClusterConfig, n *config.Node) (
 		return nil, errors.Wrap(err, "marshal")
 	}
 
-	h, err := api.NewHost(cfg.Driver, data)
+	h, err := api.NewHost(cfg.Driver, host.Guest(n.Guest), data)
 	if err != nil {
 		return nil, errors.Wrap(err, "new host")
 	}
@@ -155,11 +155,17 @@ func createHost(api libmachine.API, cfg *config.ClusterConfig, n *config.Node) (
 	h.HostOptions.AuthOptions.StorePath = localpath.MiniPath()
 	h.HostOptions.EngineOptions = engineOptions(*cfg)
 
+	api.DefineGuest(h)
+
 	cstart := time.Now()
 	klog.Infof("libmachine.API.Create for %q (driver=%q)", cfg.Name, cfg.Driver)
 
 	if cfg.StartHostTimeout == 0 {
 		cfg.StartHostTimeout = 6 * time.Minute
+		// windows nodes take longer to start, so we increase the timeout
+		if n.Guest.Name == "windows" {
+			cfg.StartHostTimeout = 10 * time.Minute
+		}
 	}
 	if err := timedCreateHost(h, api, cfg.StartHostTimeout); err != nil {
 		return nil, errors.Wrap(err, "creating host")
@@ -183,6 +189,7 @@ func timedCreateHost(h *host.Host, api libmachine.API, t time.Duration) error {
 	create := make(chan error, 1)
 	go func() {
 		defer close(create)
+		klog.Infof("libmachine.API.Create starting for %q (GuestOS=%q)", h.Name, h.Guest.Name)
 		create <- api.Create(h)
 	}()
 
@@ -297,6 +304,12 @@ func postStartSetup(h *host.Host, mc config.ClusterConfig) error {
 	}()
 
 	if driver.IsMock(h.DriverName) {
+		return nil
+	}
+
+	// skip postStartSetup for windows guest os
+	if h.Guest.Name == "windows" {
+		klog.Infof("skipping postStartSetup for windows guest os")
 		return nil
 	}
 
@@ -426,4 +439,27 @@ func addHostAliasCommand(name string, record string, sudo bool, destPath string)
 		sudoCmd,
 		destPath)
 	return exec.Command("/bin/bash", "-c", script)
+}
+
+func AddHostAliasWindows(host *host.Host, controlPlaneIP string) (string, error) {
+	out.Step(style.Provisioning, "Adding host alias for control plane ...")
+
+	path := "C:\\Windows\\System32\\drivers\\etc\\hosts"
+	entry := fmt.Sprintf("\t%s\tcontrol-plane.minikube.internal", controlPlaneIP)
+
+	psScript := fmt.Sprintf(
+		`$hostsContent = Get-Content -Path "%s" -Raw -ErrorAction SilentlyContinue; `+
+			`if ($hostsContent -notmatch [regex]::Escape("%s")) { `+
+			`Add-Content -Path "%s" -Value "%s" -Force | Out-Null }`,
+		path, entry, path, entry,
+	)
+
+	psScript = strings.ReplaceAll(psScript, `"`, `\"`)
+
+	command := fmt.Sprintf("powershell -NoProfile -NonInteractive -Command \"%s\"", psScript)
+	klog.Infof("[executing] : %v", command)
+
+	host.RunSSHCommand(command)
+
+	return "", nil
 }
