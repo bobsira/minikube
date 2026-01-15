@@ -17,19 +17,19 @@ limitations under the License.
 package machine
 
 import (
-	"fmt"
 	"os/exec"
 	"path"
 	"strings"
 	"time"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	libprovision "github.com/docker/machine/libmachine/provision"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	libprovision "k8s.io/minikube/pkg/libmachine/provision"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/driver"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/vmpath"
 	"k8s.io/minikube/pkg/provision"
 	"k8s.io/minikube/pkg/util/retry"
@@ -50,27 +50,27 @@ func (h *Machine) IsValid() bool {
 		return false
 	}
 
-	if h.Host.Name == "" {
+	if h.Name == "" {
 		return false
 	}
 
-	if h.Host.Driver == nil {
+	if h.Driver == nil {
 		return false
 	}
 
-	if h.Host.HostOptions == nil {
+	if h.HostOptions == nil {
 		return false
 	}
 
-	if h.Host.RawDriver == nil {
+	if h.RawDriver == nil {
 		return false
 	}
 	return true
 }
 
 // LoadMachine returns a Machine abstracting a libmachine.Host
-func LoadMachine(name string) (*Machine, error) {
-	api, err := NewAPIClient()
+func LoadMachine(name string, options *run.CommandOptions) (*Machine, error) {
+	api, err := NewAPIClient(options)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func backup(h host.Host, files []string) error {
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Errorf(fmt.Sprintf("%v", errs))
+		return errors.Errorf("%v", errs)
 	}
 	return nil
 }
@@ -208,7 +208,7 @@ func restore(h host.Host) error {
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Errorf(fmt.Sprintf("%v", errs))
+		return errors.Errorf("%v", errs)
 	}
 	return nil
 }

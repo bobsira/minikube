@@ -30,8 +30,6 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
@@ -41,6 +39,8 @@ import (
 	"k8s.io/minikube/pkg/addons"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/kapi"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
 	"k8s.io/minikube/pkg/minikube/bootstrapper"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/images"
@@ -64,6 +64,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/proxy"
 	"k8s.io/minikube/pkg/minikube/reason"
 	"k8s.io/minikube/pkg/minikube/registry"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/minikube/vmpath"
 	"k8s.io/minikube/pkg/network"
@@ -92,7 +93,7 @@ type Starter struct {
 }
 
 // Start spins up a guest and starts the Kubernetes node.
-func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
+func Start(starter Starter, options *run.CommandOptions) (*kubeconfig.Settings, error) { // nolint:gocyclo
 	var wg sync.WaitGroup
 	stopk8s, err := handleNoKubernetes(starter)
 	if err != nil {
@@ -163,11 +164,11 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		}
 		klog.Infof("Driver IP: %s", constants.MasterNodeIP)
 		// [re]start primary control-plane node
-		kcs, bs, err = startPrimaryControlPlane(starter, cr)
+		kcs, bs, err = startPrimaryControlPlane(starter, cr, options)
 		if err != nil {
 			return nil, err
 		}
-		// configure CoreDNS concurently from primary control-plane node only and only on first node start
+		// configure CoreDNS concurrently from primary control-plane node only and only on first node start
 		if !starter.PreExists {
 			wg.Add(1)
 			go func() {
@@ -194,7 +195,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		}
 
 		// for ha (multi-control plane) cluster, use already running control-plane node to copy over certs to this secondary control-plane node
-		cpr := mustload.Running(starter.Cfg.Name).CP.Runner
+		cpr := mustload.Running(starter.Cfg.Name, options).CP.Runner
 		if err = bs.SetupCerts(*starter.Cfg, *starter.Node, cpr); err != nil {
 			return nil, errors.Wrap(err, "setting up certs")
 		}
@@ -211,7 +212,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 			if err != nil {
 				return nil, errors.Wrap(err, "get primary control-plane bootstrapper")
 			}
-			if err := joinCluster(starter, pcpBs, bs); err != nil {
+			if err := joinCluster(starter, pcpBs, bs, options); err != nil {
 				return nil, errors.Wrap(err, "join node to cluster")
 			}
 		}
@@ -226,7 +227,7 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		if err != nil {
 			out.FailureT("Unable to load profile: {{.error}}", out.V{"error": err})
 		}
-		if err := CacheAndLoadImagesInConfig([]*config.Profile{profile}); err != nil {
+		if err := CacheAndLoadImagesInConfig([]*config.Profile{profile}, options); err != nil {
 			out.FailureT("Unable to push cached images: {{.error}}", out.V{"error": err})
 		}
 	}()
@@ -240,12 +241,12 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 		}
 		list := addons.ToEnable(starter.Cfg, starter.ExistingAddons, addonList)
 		wg.Add(1)
-		go addons.Enable(&wg, starter.Cfg, list, enabledAddons)
+		go addons.Enable(&wg, starter.Cfg, list, enabledAddons, options)
 	}
 
 	// discourage use of the virtualbox driver
 	if starter.Cfg.Driver == driver.VirtualBox && viper.GetBool(config.WantVirtualBoxDriverWarning) {
-		warnVirtualBox()
+		warnVirtualBox(options)
 	}
 
 	// special ops for "none" driver on control-plane node, like change minikube directory
@@ -270,10 +271,22 @@ func Start(starter Starter) (*kubeconfig.Settings, error) { // nolint:gocyclo
 	if starter.ExistingAddons != nil {
 		klog.Infof("waiting for cluster config update ...")
 		if ea, ok := <-enabledAddons; ok {
-			addons.UpdateConfigToEnable(starter.Cfg, ea)
+			addons.UpdateConfigToEnable(starter.Cfg, ea, options)
 		}
 	} else {
-		addons.UpdateConfigToDisable(starter.Cfg)
+		addons.UpdateConfigToDisable(starter.Cfg, options)
+	}
+
+	// for windows node prepare the linux control plane node for windows-specific flannel CNI config
+	if config.IsPrimaryControlPlane(*starter.Cfg, *starter.Node) && starter.Cfg.WindowsNodeVersion == "2022" {
+		if err := prepareLinuxNode(starter.Runner); err != nil {
+			klog.Errorf("Failed to prepare Linux node for Windows-specific Flannel CNI config: %v", err)
+		}
+
+		// set up flannel network issues
+		if err := configureFlannelCNI(); err != nil {
+			klog.Errorf("error configuring flannel CNI: %v", err)
+		}
 	}
 
 	// for windows node prepare the linux control plane node for windows-specific flannel CNI config
@@ -311,7 +324,7 @@ func handleNoKubernetes(starter Starter) (bool, error) {
 }
 
 // startPrimaryControlPlane starts control-plane node.
-func startPrimaryControlPlane(starter Starter, cr cruntime.Manager) (*kubeconfig.Settings, bootstrapper.Bootstrapper, error) {
+func startPrimaryControlPlane(starter Starter, cr cruntime.Manager, options *run.CommandOptions) (*kubeconfig.Settings, bootstrapper.Bootstrapper, error) {
 	if !config.IsPrimaryControlPlane(*starter.Cfg, *starter.Node) {
 		return nil, nil, fmt.Errorf("node not marked as primary control-plane")
 	}
@@ -334,7 +347,7 @@ func startPrimaryControlPlane(starter Starter, cr cruntime.Manager) (*kubeconfig
 		return nil, nil, errors.Wrap(err, "Failed to setup kubeadm")
 	}
 
-	if err := bs.StartCluster(*starter.Cfg); err != nil {
+	if err := bs.StartCluster(*starter.Cfg, options); err != nil {
 		ExitIfFatal(err, false)
 		out.LogEntries("Error starting cluster", err, logs.FindProblems(cr, bs, *starter.Cfg, starter.Runner))
 		return nil, bs, err
@@ -349,7 +362,7 @@ func startPrimaryControlPlane(starter Starter, cr cruntime.Manager) (*kubeconfig
 }
 
 // joinCluster adds new or prepares and then adds existing node to the cluster.
-func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrapper.Bootstrapper) error {
+func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrapper.Bootstrapper, options *run.CommandOptions) error {
 	start := time.Now()
 	klog.Infof("joinCluster: %+v", starter.Cfg)
 	out.Step(style.Waiting, "Joining {{.name}} to the cluster", out.V{"name": starter.Node.Name})
@@ -366,7 +379,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 	// You must delete the existing Node or change the name of this new joining Node"
 	if starter.PreExists {
 		klog.Infof("removing existing %s node %q before attempting to rejoin cluster: %+v", role, starter.Node.Name, starter.Node)
-		if _, err := teardown(*starter.Cfg, starter.Node.Name); err != nil {
+		if _, err := teardown(*starter.Cfg, starter.Node.Name, options); err != nil {
 			klog.Errorf("error removing existing %s node %q before rejoining cluster, will continue anyway: %v", role, starter.Node.Name, err)
 		}
 		klog.Infof("successfully removed existing %s node %q from cluster: %+v", role, starter.Node.Name, starter.Node)
@@ -400,7 +413,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 
 				// reset node to revert any changes made by previous kubeadm init/join
 				klog.Infof("resetting %s node %q before attempting to rejoin cluster...", role, starter.Node.Name)
-				if _, err := starter.Runner.RunCmd(exec.Command("/bin/bash", "-c", fmt.Sprintf("%s reset --force", bsutil.InvokeKubeadm(starter.Cfg.KubernetesConfig.KubernetesVersion)))); err != nil {
+				if _, err := starter.Runner.RunCmd(exec.Command("sudo", "/bin/bash", "-c", fmt.Sprintf("%s reset --force", bsutil.KubeadmCmdWithPath(starter.Cfg.KubernetesConfig.KubernetesVersion)))); err != nil {
 					klog.Infof("kubeadm reset failed, continuing anyway: %v", err)
 				} else {
 					klog.Infof("successfully reset %s node %q", role, starter.Node.Name)
@@ -463,7 +476,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 }
 
 // Provision provisions the machine/container for the node
-func Provision(cc *config.ClusterConfig, n *config.Node, delOnFail bool) (command.Runner, bool, libmachine.API, *host.Host, error) {
+func Provision(cc *config.ClusterConfig, n *config.Node, delOnFail bool, options *run.CommandOptions) (command.Runner, bool, libmachine.API, *host.Host, error) {
 	register.Reg.SetStep(register.StartingNode)
 	name := config.MachineName(*cc, *n)
 
@@ -482,25 +495,25 @@ func Provision(cc *config.ClusterConfig, n *config.Node, delOnFail bool) (comman
 	}
 
 	if driver.IsKIC(cc.Driver) {
-		beginDownloadKicBaseImage(&kicGroup, cc, viper.GetBool("download-only"))
+		beginDownloadKicBaseImage(&kicGroup, cc, options.DownloadOnly)
 	}
 
 	if !driver.BareMetal(cc.Driver) {
 		beginCacheKubernetesImages(&cacheGroup, cc.KubernetesConfig.ImageRepository, n.KubernetesVersion, cc.KubernetesConfig.ContainerRuntime, cc.Driver)
 	}
 
-	// Abstraction leakage alert: startHost requires the config to be saved, to satistfy pkg/provision/buildroot.
+	// Abstraction leakage alert: startHost requires the config to be saved, to satisfy pkg/provision/buildroot.
 	// Hence, SaveProfile must be called before startHost, and again afterwards when we know the IP.
 	if err := config.SaveProfile(viper.GetString(config.ProfileName), cc); err != nil {
 		return nil, false, nil, nil, errors.Wrap(err, "Failed to save config")
 	}
 
-	handleDownloadOnly(&cacheGroup, &kicGroup, n.KubernetesVersion, cc.KubernetesConfig.ContainerRuntime, cc.Driver)
+	handleDownloadOnly(&cacheGroup, &kicGroup, n.KubernetesVersion, cc.KubernetesConfig.ContainerRuntime, cc.Driver, options)
 	if driver.IsKIC(cc.Driver) {
 		waitDownloadKicBaseImage(&kicGroup)
 	}
 
-	return startMachine(cc, n, delOnFail)
+	return startMachine(cc, n, delOnFail, options)
 }
 
 // ConfigureRuntimes does what needs to happen to get a runtime going.
@@ -515,7 +528,7 @@ func configureRuntimes(runner cruntime.CommandRunner, cc config.ClusterConfig, k
 		InsecureRegistry:  cc.InsecureRegistry,
 	}
 	if cc.GPUs != "" {
-		co.GPUs = true
+		co.GPUs = cc.GPUs
 	}
 	cr, err := cruntime.New(co)
 	if err != nil {
@@ -603,8 +616,18 @@ func cgroupDriver(cc config.ClusterConfig) string {
 		return constants.SystemdCgroupDriver
 	}
 
-	// vm driver uses iso that boots with cgroupfs cgroup driver by default atm (keep in sync!)
+	// VM driver supports both cgroup v1 and v2.
+	// On systemd-based systems (like Minikube ISO), systemd manages the single unified cgroup v2 hierarchy.
+	// Using cgroupfs with v2 would cause conflicts as two entities (systemd and runtime) try to manage the same hierarchy.
+	// Therefore, we default to the systemd driver for v2 to ensure stability and avoid conflicts.
 	if driver.IsVM(cc.Driver) {
+		// TODO, if system doesnt support cgroup v2, then use cgroupfs #22321
+		if ver, err := util.ParseKubernetesVersion(cc.KubernetesConfig.KubernetesVersion); err == nil {
+			if ver.GTE(semver.MustParse("1.22.0")) {
+				klog.Infof("Kubernetes %s+ detected, using %q cgroup driver", ver.String(), constants.SystemdCgroupDriver)
+				return constants.SystemdCgroupDriver
+			}
+		}
 		return constants.CgroupfsCgroupDriver
 	}
 
@@ -618,8 +641,8 @@ func cgroupDriver(cc config.ClusterConfig) string {
 	return detect.CgroupDriver()
 }
 
-func pathExists(runner cruntime.CommandRunner, path string) (bool, error) {
-	_, err := runner.RunCmd(exec.Command("stat", path))
+func pathExists(runner cruntime.CommandRunner, p string) (bool, error) {
+	_, err := runner.RunCmd(exec.Command("stat", p))
 	if err == nil {
 		return true, nil
 	}
@@ -720,18 +743,18 @@ func setupKubeadm(mAPI libmachine.API, cfg config.ClusterConfig, n config.Node, 
 
 // setupKubeconfig generates kubeconfig.
 func setupKubeconfig(h host.Host, cc config.ClusterConfig, n config.Node, clusterName string) *kubeconfig.Settings {
-	host := cc.KubernetesConfig.APIServerHAVIP
+	hostIP := cc.KubernetesConfig.APIServerHAVIP
 	port := cc.APIServerPort
 	if !config.IsHA(cc) || driver.NeedsPortForward(cc.Driver) {
 		var err error
-		if host, _, port, err = driver.ControlPlaneEndpoint(&cc, &n, h.DriverName); err != nil {
+		if hostIP, _, port, err = driver.ControlPlaneEndpoint(&cc, &n, h.DriverName); err != nil {
 			exit.Message(reason.DrvCPEndpoint, fmt.Sprintf("failed to construct cluster server address: %v", err), out.V{"profileArg": fmt.Sprintf("--profile=%s", clusterName)})
 		}
 	}
-	addr := fmt.Sprintf("https://" + net.JoinHostPort(host, strconv.Itoa(port)))
+	addr := fmt.Sprintf("https://%s", net.JoinHostPort(hostIP, strconv.Itoa(port)))
 
 	if cc.KubernetesConfig.APIServerName != constants.APIServerName {
-		addr = strings.ReplaceAll(addr, host, cc.KubernetesConfig.APIServerName)
+		addr = strings.ReplaceAll(addr, hostIP, cc.KubernetesConfig.APIServerName)
 	}
 
 	kcs := &kubeconfig.Settings{
@@ -750,35 +773,33 @@ func setupKubeconfig(h host.Host, cc config.ClusterConfig, n config.Node, cluste
 }
 
 // StartMachine starts a VM
-func startMachine(cfg *config.ClusterConfig, node *config.Node, delOnFail bool) (runner command.Runner, preExists bool, machineAPI libmachine.API, host *host.Host, err error) {
-	m, err := machine.NewAPIClient()
+func startMachine(cfg *config.ClusterConfig, node *config.Node, delOnFail bool, options *run.CommandOptions) (runner command.Runner, preExists bool, machineAPI libmachine.API, hostInfo *host.Host, err error) {
+	m, err := machine.NewAPIClient(options)
 	if err != nil {
-		return runner, preExists, m, host, errors.Wrap(err, "Failed to get machine client")
+		return runner, preExists, m, hostInfo, errors.Wrap(err, "Failed to get machine client")
 	}
-	host, preExists, err = startHostInternal(m, cfg, node, delOnFail)
+	hostInfo, preExists, err = startHostInternal(m, cfg, node, delOnFail)
 	if err != nil {
-		return runner, preExists, m, host, errors.Wrap(err, "Failed to start host")
+		return runner, preExists, m, hostInfo, errors.Wrap(err, "Failed to start host")
 	}
-	// log that we managed to call startHostInternal
-	klog.Infof("startHostInternal returned: %v, %v, %v", host, preExists, err)
-	runner, err = machine.CommandRunner(host)
+	runner, err = machine.CommandRunner(hostInfo)
 	if err != nil {
-		return runner, preExists, m, host, errors.Wrap(err, "Failed to get command runner")
+		return runner, preExists, m, hostInfo, errors.Wrap(err, "Failed to get command runner")
 	}
 	// log that we managed to get a command runner
 	klog.Infof("CommandRunner returned: %v", runner)
 
-	ip, err := validateNetwork(host, runner, cfg.KubernetesConfig.ImageRepository)
+	ip, err := validateNetwork(hostInfo, runner, cfg.KubernetesConfig.ImageRepository)
 	if err != nil {
-		return runner, preExists, m, host, errors.Wrap(err, "Failed to validate network")
+		return runner, preExists, m, hostInfo, errors.Wrap(err, "Failed to validate network")
 	}
 	// log that we managed to validate the network
 	klog.Infof("validateNetwork returned: %v", ip)
 
-	if driver.IsQEMU(host.Driver.DriverName()) && network.IsBuiltinQEMU(cfg.Network) {
+	if driver.IsQEMU(hostInfo.Driver.DriverName()) && network.IsBuiltinQEMU(cfg.Network) {
 		apiServerPort, err := getPort()
 		if err != nil {
-			return runner, preExists, m, host, errors.Wrap(err, "Failed to find apiserver port")
+			return runner, preExists, m, hostInfo, errors.Wrap(err, "Failed to find apiserver port")
 		}
 		cfg.APIServerPort = apiServerPort
 	}
@@ -793,9 +814,9 @@ func startMachine(cfg *config.ClusterConfig, node *config.Node, delOnFail bool) 
 	klog.Infof("Excluded IP from proxy: %v", ip)
 
 	// log the result of the function
-	klog.Infof("startMachine returned: %v, %v, %v, %v", runner, preExists, m, host)
+	klog.Infof("startMachine returned: %v, %v, %v, %v", runner, preExists, m, hostInfo)
 
-	return runner, preExists, m, host, err
+	return runner, preExists, m, hostInfo, err
 }
 
 // getPort asks the kernel for a free open port that is ready to use
@@ -815,11 +836,9 @@ func getPort() (int, error) {
 
 // startHostInternal starts a new minikube host using a VM or None
 func startHostInternal(api libmachine.API, cc *config.ClusterConfig, n *config.Node, delOnFail bool) (*host.Host, bool, error) {
-	klog.Infof("StartHost: %s %+v", cc.Name, n)
-	host, exists, err := machine.StartHost(api, cc, n)
-	klog.Infof("StartHost returned: %v, %v, %v", host, exists, err)
+	hostInfo, exists, err := machine.StartHost(api, cc, n)
 	if err == nil {
-		return host, exists, nil
+		return hostInfo, exists, nil
 	}
 	klog.Warningf("error starting host: %v", err)
 	// NOTE: People get very cranky if you delete their preexisting VM. Only delete new ones.
@@ -832,7 +851,7 @@ func startHostInternal(api libmachine.API, cc *config.ClusterConfig, n *config.N
 
 	if err, ff := errors.Cause(err).(*oci.FailFastError); ff {
 		klog.Infof("will skip retrying to create machine because error is not retriable: %v", err)
-		return host, exists, err
+		return hostInfo, exists, err
 	}
 
 	out.ErrT(style.Embarrassed, "StartHost failed, but will try again: {{.error}}", out.V{"error": err})
@@ -849,15 +868,15 @@ func startHostInternal(api libmachine.API, cc *config.ClusterConfig, n *config.N
 		}
 	}
 
-	host, exists, err = machine.StartHost(api, cc, n)
+	hostInfo, exists, err = machine.StartHost(api, cc, n)
 	if err == nil {
-		return host, exists, nil
+		return hostInfo, exists, nil
 	}
 
 	// Don't use host.Driver to avoid nil pointer deref
 	drv := cc.Driver
 	out.ErrT(style.Sad, `Failed to start {{.driver}} {{.driver_type}}. Running "{{.cmd}}" may fix it: {{.error}}`, out.V{"driver": drv, "driver_type": driver.MachineType(drv), "cmd": mustload.ExampleCmd(cc.Name, "delete"), "error": err})
-	return host, exists, err
+	return hostInfo, exists, err
 }
 
 // validateNetwork tries to catch network problems as soon as possible
@@ -870,7 +889,8 @@ func validateNetwork(h *host.Host, r command.Runner, imageRepository string) (st
 	optSeen := false
 	warnedOnce := false
 	for _, k := range proxy.EnvVars {
-		if v := os.Getenv(k); v != "" {
+		v := os.Getenv(k)
+		if v != "" {
 			if !optSeen {
 				out.Styled(style.Internet, "Found network options:")
 				optSeen = true
@@ -878,7 +898,7 @@ func validateNetwork(h *host.Host, r command.Runner, imageRepository string) (st
 			k = strings.ToUpper(k) // let's get the key right away to mask password from output
 			// If http(s)_proxy contains password, let's not splatter on the screen
 			if k == "HTTP_PROXY" || k == "HTTPS_PROXY" {
-				v = util.MaskProxyPassword(v)
+				v = proxy.MaskProxyPassword(v)
 			}
 			out.Infof("{{.key}}={{.value}}", out.V{"key": k, "value": v})
 			ipExcluded := proxy.IsIPExcluded(ip) // Skip warning if minikube ip is already in NO_PROXY
@@ -957,9 +977,9 @@ func tryRegistry(r command.Runner, driverName, imageRepository, ip string) {
 	// 2 second timeout. For best results, call tryRegistry in a non-blocking manner.
 	opts := []string{"-sS", "-m", "2"}
 
-	proxy := os.Getenv("HTTPS_PROXY")
-	if proxy != "" && !strings.HasPrefix(proxy, "localhost") && !strings.HasPrefix(proxy, "127.0") {
-		opts = append([]string{"-x", proxy}, opts...)
+	httpsProxy := os.Getenv("HTTPS_PROXY")
+	if httpsProxy != "" && !strings.HasPrefix(httpsProxy, "localhost") && !strings.HasPrefix(httpsProxy, "127.0") {
+		opts = append([]string{"-x", httpsProxy}, opts...)
 	}
 
 	if imageRepository == "" {
@@ -1087,16 +1107,16 @@ func addCoreDNSEntry(runner command.Runner, name, ip string, cc config.ClusterCo
 
 	// get current coredns configmap via kubectl
 	get := fmt.Sprintf("sudo %s --kubeconfig=%s -n kube-system get configmap coredns -o yaml", kubectl, kubecfg)
-	out, err := runner.RunCmd(exec.Command("/bin/bash", "-c", get))
+	rest, err := runner.RunCmd(exec.Command("/bin/bash", "-c", get))
 	if err != nil {
 		klog.Errorf("failed to get current CoreDNS ConfigMap: %v", err)
 		return err
 	}
-	cm := strings.TrimSpace(out.Stdout.String())
+	cm := strings.TrimSpace(rest.Stdout.String())
 
 	// check if this specific host entry already exists in coredns configmap, so not to duplicate/override it
-	host := regexp.MustCompile(fmt.Sprintf(`(?smU)^ *hosts {.*%s.*}`, name))
-	if host.MatchString(cm) {
+	hostInfo := regexp.MustCompile(fmt.Sprintf(`(?smU)^ *hosts {.*%s.*}`, name))
+	if hostInfo.MatchString(cm) {
 		klog.Infof("CoreDNS already contains %q host record, skipping...", name)
 		return nil
 	}
@@ -1111,11 +1131,15 @@ func addCoreDNSEntry(runner command.Runner, name, ip string, cc config.ClusterCo
 		sed = fmt.Sprintf("sed -e '/^        hosts {.*/a \\           %s %s'", ip, name)
 	}
 
-	// check if logging is already enabled (via log plugin) in coredns configmap, so not to duplicate it
-	logs := regexp.MustCompile(`(?smU)^ *log *$`)
-	if !logs.MatchString(cm) {
-		// inject log plugin into coredns configmap
-		sed = fmt.Sprintf("%s -e '/^        errors *$/i \\        log'", sed)
+	if cc.DisableCoreDNSLog {
+		sed = fmt.Sprintf("%s -e '/^        log *$/d'", sed)
+	} else {
+		// check if logging is already enabled (via log plugin) in coredns configmap, so not to duplicate it
+		regex := regexp.MustCompile(`(?smU)^ *log *$`)
+		if !regex.MatchString(cm) {
+			// inject log plugin into coredns configmap
+			sed = fmt.Sprintf("%s -e '/^        errors *$/i \\        log'", sed)
+		}
 	}
 
 	// replace coredns configmap via kubectl
@@ -1130,9 +1154,9 @@ func addCoreDNSEntry(runner command.Runner, name, ip string, cc config.ClusterCo
 }
 
 // prints a warning to the console against the use of the 'virtualbox' driver, if alternatives are available and healthy
-func warnVirtualBox() {
+func warnVirtualBox(options *run.CommandOptions) {
 	var altDriverList strings.Builder
-	for _, choice := range driver.Choices(true) {
+	for _, choice := range driver.Choices(true, options) {
 		if !driver.IsVirtualBox(choice.Name) && choice.Priority != registry.Discouraged && choice.State.Installed && choice.State.Healthy {
 			altDriverList.WriteString(fmt.Sprintf("\n\t- %s", choice.Name))
 		}

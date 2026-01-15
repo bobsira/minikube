@@ -34,9 +34,6 @@ import (
 	// WARNING: Do not use path/filepath in this package unless you want bizarre Windows paths
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +42,9 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/kapi"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/bootstrapper"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil"
@@ -62,6 +62,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/machine"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/out/register"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/minikube/sysinit"
 	"k8s.io/minikube/pkg/minikube/vmpath"
@@ -172,8 +173,8 @@ func (k *Bootstrapper) clearStaleConfigs(cfg config.ClusterConfig) {
 }
 
 // init initialises primary control-plane using kubeadm.
-func (k *Bootstrapper) init(cfg config.ClusterConfig) error {
-	version, err := util.ParseKubernetesVersion(cfg.KubernetesConfig.KubernetesVersion)
+func (k *Bootstrapper) init(cfg config.ClusterConfig, options *run.CommandOptions) error {
+	ver, err := util.ParseKubernetesVersion(cfg.KubernetesConfig.KubernetesVersion)
 	if err != nil {
 		return errors.Wrap(err, "parsing Kubernetes version")
 	}
@@ -196,7 +197,7 @@ func (k *Bootstrapper) init(cfg config.ClusterConfig) error {
 		"Swap",       // For "none" users who have swap configured
 		"NumCPU",     // For "none" users who have too few CPUs
 	}
-	if version.GE(semver.MustParse("1.20.0")) {
+	if ver.GE(semver.MustParse("1.20.0")) {
 		ignore = append(ignore,
 			"Mem", // For "none" users who have too little memory
 		)
@@ -229,8 +230,16 @@ func (k *Bootstrapper) init(cfg config.ClusterConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), initTimeoutMinutes*time.Minute)
 	defer cancel()
 	kr, kw := io.Pipe()
-	c := exec.CommandContext(ctx, "/bin/bash", "-c", fmt.Sprintf("%s init --config %s %s --ignore-preflight-errors=%s",
-		bsutil.InvokeKubeadm(cfg.KubernetesConfig.KubernetesVersion), conf, extraFlags, strings.Join(ignore, ",")))
+
+	cmd := fmt.Sprintf(
+		"%s init --config %s %s --ignore-preflight-errors=%s",
+		bsutil.KubeadmCmdWithPath(cfg.KubernetesConfig.KubernetesVersion),
+		conf,
+		extraFlags,
+		strings.Join(ignore, ","),
+	)
+	c := exec.CommandContext(ctx, "sudo", "/bin/bash", "-c", cmd)
+
 	c.Stdout = kw
 	c.Stderr = kw
 	var wg sync.WaitGroup
@@ -284,7 +293,7 @@ func (k *Bootstrapper) init(cfg config.ClusterConfig) error {
 	wg.Wait()
 
 	// tunnel apiserver to guest
-	if err := k.tunnelToAPIServer(cfg); err != nil {
+	if err := k.tunnelToAPIServer(cfg, options); err != nil {
 		klog.Warningf("apiserver tunnel failed: %v", err)
 	}
 
@@ -388,7 +397,7 @@ func (k *Bootstrapper) unpause(cfg config.ClusterConfig) error {
 }
 
 // StartCluster starts the cluster
-func (k *Bootstrapper) StartCluster(cfg config.ClusterConfig) error {
+func (k *Bootstrapper) StartCluster(cfg config.ClusterConfig, options *run.CommandOptions) error {
 	start := time.Now()
 	klog.Infof("StartCluster: %+v", cfg)
 	defer func() {
@@ -402,7 +411,7 @@ func (k *Bootstrapper) StartCluster(cfg config.ClusterConfig) error {
 
 	if err := bsutil.ExistingConfig(k.c); err == nil {
 		// if the guest already exists and was stopped, re-establish the apiserver tunnel so checks pass
-		if err := k.tunnelToAPIServer(cfg); err != nil {
+		if err := k.tunnelToAPIServer(cfg, options); err != nil {
 			klog.Warningf("apiserver tunnel failed: %v", err)
 		}
 
@@ -424,7 +433,7 @@ func (k *Bootstrapper) StartCluster(cfg config.ClusterConfig) error {
 		return errors.Wrap(err, "cp")
 	}
 
-	err := k.init(cfg)
+	err := k.init(cfg, options)
 	if err == nil {
 		return nil
 	}
@@ -435,13 +444,13 @@ func (k *Bootstrapper) StartCluster(cfg config.ClusterConfig) error {
 		if err := k.DeleteCluster(cfg.KubernetesConfig); err != nil {
 			klog.Warningf("delete failed: %v", err)
 		}
-		return k.init(cfg)
+		return k.init(cfg, options)
 	}
 	return err
 }
 
 // tunnelToAPIServer creates ssh tunnel between apiserver:port inside control-plane node and host on port 8443.
-func (k *Bootstrapper) tunnelToAPIServer(cfg config.ClusterConfig) error {
+func (k *Bootstrapper) tunnelToAPIServer(cfg config.ClusterConfig, options *run.CommandOptions) error {
 	if cfg.APIServerPort == 0 {
 		return fmt.Errorf("apiserver port not set")
 	}
@@ -451,7 +460,7 @@ func (k *Bootstrapper) tunnelToAPIServer(cfg config.ClusterConfig) error {
 		return nil
 	}
 
-	m, err := machine.NewAPIClient()
+	m, err := machine.NewAPIClient(options)
 	if err != nil {
 		return errors.Wrapf(err, "create libmachine api client")
 	}
@@ -491,7 +500,8 @@ func (k *Bootstrapper) client(ip string, port int) (*kubernetes.Clientset, error
 	return c, err
 }
 
-// WaitForNode blocks until the node appears to be healthy
+// WaitForNode blocks until the node appears to be healthy.
+// It should not be called for [re]started primary control-plane node in HA clusters.
 func (k *Bootstrapper) WaitForNode(cfg config.ClusterConfig, n config.Node, timeout time.Duration) error {
 	start := time.Now()
 	register.Reg.SetStep(register.VerifyingKubernetes)
@@ -526,16 +536,11 @@ func (k *Bootstrapper) WaitForNode(cfg config.ClusterConfig, n config.Node, time
 		return nil
 	}
 
-	if cfg.VerifyComponents[kverify.NodeReadyKey] {
+	// if extra waiting for system pods to be ready is required, we need node to be ready beforehand
+	if cfg.VerifyComponents[kverify.NodeReadyKey] || cfg.VerifyComponents[kverify.ExtraKey] {
 		name := bsutil.KubeNodeName(cfg, n)
 		if err := kverify.WaitNodeCondition(client, name, core.NodeReady, timeout); err != nil {
 			return errors.Wrap(err, "waiting for node to be ready")
-		}
-	}
-
-	if cfg.VerifyComponents[kverify.ExtraKey] {
-		if err := kverify.WaitExtra(client, kverify.CorePodsLabels, timeout); err != nil {
-			return errors.Wrap(err, "extra waiting")
 		}
 	}
 
@@ -590,7 +595,7 @@ func (k *Bootstrapper) WaitForNode(cfg config.ClusterConfig, n config.Node, time
 }
 
 // restartPrimaryControlPlane restarts the kubernetes cluster configured by kubeadm.
-func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) error {
+func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) error { //nolint: gocyclo
 	klog.Infof("restartPrimaryControlPlane start ...")
 
 	start := time.Now()
@@ -655,7 +660,7 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 		return errors.Wrap(err, "cp")
 	}
 
-	baseCmd := fmt.Sprintf("%s init", bsutil.InvokeKubeadm(cfg.KubernetesConfig.KubernetesVersion))
+	baseCmd := fmt.Sprintf("%s init", bsutil.KubeadmCmdWithPath(cfg.KubernetesConfig.KubernetesVersion))
 	cmds := []string{
 		fmt.Sprintf("%s phase certs all --config %s", baseCmd, conf),
 		fmt.Sprintf("%s phase kubeconfig all --config %s", baseCmd, conf),
@@ -666,10 +671,10 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 
 	// Run commands one at a time so that it is easier to root cause failures.
 	for _, c := range cmds {
-		if _, err := k.c.RunCmd(exec.Command("/bin/bash", "-c", c)); err != nil {
+		if _, err := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", c)); err != nil {
 			klog.Errorf("%s failed - will try once more: %v", c, err)
 
-			if _, err := k.c.RunCmd(exec.Command("/bin/bash", "-c", c)); err != nil {
+			if _, err := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", c)); err != nil {
 				return errors.Wrap(err, "run")
 			}
 		}
@@ -708,7 +713,7 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 		if cfg.KubernetesConfig.ExtraOptions.Exists("kubeadm.skip-phases=addon/kube-proxy") {
 			addons = "coredns"
 		}
-		_, err := k.c.RunCmd(exec.Command("/bin/bash", "-c", fmt.Sprintf("%s phase addon %s --config %s", baseCmd, addons, conf)))
+		_, err := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", fmt.Sprintf("%s phase addon %s --config %s", baseCmd, addons, conf)))
 		return err
 	}
 	if err = retry.Expo(addonPhase, 100*time.Microsecond, 30*time.Second); err != nil {
@@ -724,25 +729,21 @@ func (k *Bootstrapper) restartPrimaryControlPlane(cfg config.ClusterConfig) erro
 		// and by that time we would exit completely, so we wait until kubelet begins restarting pods
 		klog.Info("waiting for restarted kubelet to initialise ...")
 		start := time.Now()
-		wait := func() error {
+		waitFunc := func() error {
 			pods, err := client.CoreV1().Pods(meta.NamespaceSystem).List(context.Background(), meta.ListOptions{LabelSelector: "tier=control-plane"})
 			if err != nil {
 				return err
 			}
 			for _, pod := range pods.Items {
-				if ready, _ := kverify.IsPodReady(&pod); !ready {
+				if !kverify.IsPodReady(&pod) {
 					return nil
 				}
 			}
 			return fmt.Errorf("kubelet not initialised")
 		}
-		_ = retry.Expo(wait, 250*time.Millisecond, 1*time.Minute)
+		_ = retry.Expo(waitFunc, 250*time.Millisecond, 1*time.Minute)
 		klog.Infof("kubelet initialised")
 		klog.Infof("duration metric: took %s waiting for restarted kubelet to initialise ...", time.Since(start))
-
-		if err := kverify.WaitExtra(client, kverify.CorePodsLabels, kconst.DefaultControlPlaneTimeout); err != nil {
-			return errors.Wrap(err, "extra")
-		}
 	}
 
 	if err := bsutil.AdjustResourceLimits(k.c); err != nil {
@@ -840,11 +841,11 @@ func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinC
 			" --apiserver-bind-port=" + strconv.Itoa(n.Port)
 	}
 
-	if _, err := k.c.RunCmd(exec.Command("/bin/bash", "-c", joinCmd)); err != nil {
+	if _, err := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", joinCmd)); err != nil {
 		return errors.Wrapf(err, "kubeadm join")
 	}
 
-	if _, err := k.c.RunCmd(exec.Command("/bin/bash", "-c", "sudo systemctl daemon-reload && sudo systemctl enable kubelet && sudo systemctl start kubelet")); err != nil {
+	if _, err := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", "systemctl daemon-reload && systemctl enable kubelet && systemctl start kubelet")); err != nil {
 		return errors.Wrap(err, "starting kubelet")
 	}
 
@@ -853,7 +854,7 @@ func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinC
 
 // GenerateTokenWindows creates a token and returns the appropriate kubeadm join command to run, or the already existing token
 func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, error) {
-	tokenCmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.InvokeKubeadm(cc.KubernetesConfig.KubernetesVersion)))
+	tokenCmd := exec.Command("sudo", "/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.KubeadmCmdWithPath(cc.KubernetesConfig.KubernetesVersion)))
 	r, err := k.c.RunCmd(tokenCmd)
 	if err != nil {
 		return "", errors.Wrap(err, "generating join command")
@@ -877,22 +878,22 @@ func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, er
 // GenerateToken creates a token and returns the appropriate kubeadm join command to run, or the already existing token
 func (k *Bootstrapper) GenerateToken(cc config.ClusterConfig) (string, error) {
 	// Take that generated token and use it to get a kubeadm join command
-	tokenCmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.InvokeKubeadm(cc.KubernetesConfig.KubernetesVersion)))
+	tokenCmd := exec.Command("sudo", "/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.KubeadmCmdWithPath(cc.KubernetesConfig.KubernetesVersion)))
 	r, err := k.c.RunCmd(tokenCmd)
 	if err != nil {
 		return "", errors.Wrap(err, "generating join command")
 	}
 
 	joinCmd := r.Stdout.String()
-	joinCmd = strings.Replace(joinCmd, "kubeadm", bsutil.InvokeKubeadm(cc.KubernetesConfig.KubernetesVersion), 1)
+	joinCmd = strings.Replace(joinCmd, "kubeadm", bsutil.KubeadmCmdWithPath(cc.KubernetesConfig.KubernetesVersion), 1)
 	joinCmd = fmt.Sprintf("%s --ignore-preflight-errors=all", strings.TrimSpace(joinCmd))
 
 	// avoid "Found multiple CRI endpoints on the host. Please define which one do you wish to use by setting the 'criSocket' field in the kubeadm configuration file: unix:///var/run/containerd/containerd.sock, unix:///var/run/cri-dockerd.sock" error
-	version, err := util.ParseKubernetesVersion(cc.KubernetesConfig.KubernetesVersion)
+	ver, err := util.ParseKubernetesVersion(cc.KubernetesConfig.KubernetesVersion)
 	if err != nil {
 		return "", errors.Wrap(err, "parsing Kubernetes version")
 	}
-	cr, err := cruntime.New(cruntime.Config{Type: cc.KubernetesConfig.ContainerRuntime, Runner: k.c, Socket: cc.KubernetesConfig.CRISocket, KubernetesVersion: version})
+	cr, err := cruntime.New(cruntime.Config{Type: cc.KubernetesConfig.ContainerRuntime, Runner: k.c, Socket: cc.KubernetesConfig.CRISocket, KubernetesVersion: ver})
 	if err != nil {
 		klog.Errorf("cruntime: %v", err)
 	}
@@ -944,23 +945,23 @@ func StopKubernetes(runner command.Runner, cr cruntime.Manager) {
 
 // DeleteCluster removes the components that were started earlier
 func (k *Bootstrapper) DeleteCluster(k8s config.KubernetesConfig) error {
-	version, err := util.ParseKubernetesVersion(k8s.KubernetesVersion)
+	ver, err := util.ParseKubernetesVersion(k8s.KubernetesVersion)
 	if err != nil {
 		return errors.Wrap(err, "parsing Kubernetes version")
 	}
-	cr, err := cruntime.New(cruntime.Config{Type: k8s.ContainerRuntime, Runner: k.c, Socket: k8s.CRISocket, KubernetesVersion: version})
+	cr, err := cruntime.New(cruntime.Config{Type: k8s.ContainerRuntime, Runner: k.c, Socket: k8s.CRISocket, KubernetesVersion: ver})
 	if err != nil {
 		return errors.Wrap(err, "runtime")
 	}
 
-	ka := bsutil.InvokeKubeadm(k8s.KubernetesVersion)
+	ka := bsutil.KubeadmCmdWithPath(k8s.KubernetesVersion)
 	sp := cr.SocketPath()
 	cmd := fmt.Sprintf("%s reset --cri-socket %s --force", ka, sp)
-	if version.LT(semver.MustParse("1.11.0")) {
+	if ver.LT(semver.MustParse("1.11.0")) {
 		cmd = fmt.Sprintf("%s reset --cri-socket %s", ka, sp)
 	}
 
-	rr, derr := k.c.RunCmd(exec.Command("/bin/bash", "-c", cmd))
+	rr, derr := k.c.RunCmd(exec.Command("sudo", "/bin/bash", "-c", cmd))
 	if derr != nil {
 		klog.Warningf("%s: %v", rr.Command(), err)
 	}
@@ -978,12 +979,12 @@ func (k *Bootstrapper) SetupCerts(k8s config.ClusterConfig, n config.Node, pcpCm
 func (k *Bootstrapper) UpdateCluster(cfg config.ClusterConfig) error {
 	klog.Infof("updating cluster %+v ...", cfg)
 
-	images, err := images.Kubeadm(cfg.KubernetesConfig.ImageRepository, cfg.KubernetesConfig.KubernetesVersion)
+	imgs, err := images.Kubeadm(cfg.KubernetesConfig.ImageRepository, cfg.KubernetesConfig.KubernetesVersion)
 	if err != nil {
 		return errors.Wrap(err, "kubeadm images")
 	}
 
-	version, err := util.ParseKubernetesVersion(cfg.KubernetesConfig.KubernetesVersion)
+	ver, err := util.ParseKubernetesVersion(cfg.KubernetesConfig.KubernetesVersion)
 	if err != nil {
 		return errors.Wrap(err, "parsing Kubernetes version")
 	}
@@ -991,7 +992,7 @@ func (k *Bootstrapper) UpdateCluster(cfg config.ClusterConfig) error {
 		Type:              cfg.KubernetesConfig.ContainerRuntime,
 		Runner:            k.c,
 		Socket:            cfg.KubernetesConfig.CRISocket,
-		KubernetesVersion: version,
+		KubernetesVersion: ver,
 	})
 	if err != nil {
 		return errors.Wrap(err, "runtime")
@@ -1007,7 +1008,7 @@ func (k *Bootstrapper) UpdateCluster(cfg config.ClusterConfig) error {
 	}
 
 	if cfg.KubernetesConfig.ShouldLoadCachedImages {
-		if err := machine.LoadCachedImages(&cfg, k.c, images, detect.ImageCacheDir(), false); err != nil {
+		if err := machine.LoadCachedImages(&cfg, k.c, imgs, detect.ImageCacheDir(), false); err != nil {
 			out.FailureT("Unable to load cached images: {{.error}}", out.V{"error": err})
 		}
 	}

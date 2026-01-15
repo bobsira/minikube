@@ -35,6 +35,14 @@ source ./hack/jenkins/installers/check_install_linux_crons.sh
 export GOBIN=/usr/local/go/bin
 export PATH=$PATH:$GOBIN
 
+generate_package_list() {
+	make
+	./out/minikube delete
+	./out/minikube start
+	./out/minikube ssh -- sudo dpkg -l --no-pager > hack/kicbase_version/os-package-list.txt
+	./out/minikube delete
+}
+
 # Let's make sure we have the newest kicbase reference
 curl -L https://github.com/kubernetes/minikube/raw/master/pkg/drivers/kic/types.go --output types-head.go
 # kicbase tags are of the form VERSION-TIMESTAMP-PR, so this grep finds that TIMESTAMP in the middle
@@ -70,18 +78,21 @@ GCR_IMG=${GCR_REPO}:${KIC_VERSION}
 DH_IMG=${DH_REPO}:${KIC_VERSION}
 export KICBASE_IMAGE_REGISTRIES="${GCR_IMG} ${DH_IMG}"
 
-# Build a new kicbase image
-CIBUILD=yes make push-kic-base-image | tee kic-logs.txt
 
-# Abort with error message if above command failed
-ec=$?
-if [ $ec -gt 0 ]; then
-	if [ "$release" = false ]; then
-		gh pr comment ${ghprbPullId} --body "Hi ${ghprbPullAuthorLoginMention}, building a new kicbase image failed.
+if ! CIBUILD=yes make push-kic-base-image | tee kic-logs.txt; then
+    # Exit of `make` (PIPESTATUS[0]); fallback to 1 if unavailable
+    ec=${PIPESTATUS[0]:-1}
+
+    # Only comment on non-release; default release=false if unset
+    if [[ ${release:-false} != "true" ]]; then
+        body=$(cat << EOF
+Hi ${ghprbPullAuthorLoginMention}, building a new kicbase image failed.
 		See the logs at: https://storage.cloud.google.com/minikube-builds/logs/${ghprbPullId}/${ghprbActualCommit::7}/kic_image_build.txt
-		"
-	fi
-	exit $ec
+EOF
+)
+	    gh pr comment "${ghprbPullId}" --body "$body"
+    fi
+    exit "$ec"
 fi
 
 # Retrieve the sha from the new image
@@ -100,6 +111,7 @@ if [ "$release" = false ]; then
 	git checkout -b ${ghprbPullAuthorLogin}-${ghprbSourceBranch} ${ghprbPullAuthorLogin}/${ghprbSourceBranch}
 
 	sed -i "s|Version = .*|Version = \"${KIC_VERSION}\"|;s|baseImageSHA = .*|baseImageSHA = \"${sha}\"|;s|gcrRepo = .*|gcrRepo = \"${GCR_REPO}\"|;s|dockerhubRepo = .*|dockerhubRepo = \"${DH_REPO}\"|" pkg/drivers/kic/types.go; make generate-docs;
+	generate_package_list
 
 	git commit -am "Updating kicbase image to ${KIC_VERSION}"
 	git push ${ghprbPullAuthorLogin} HEAD:${ghprbSourceBranch}
@@ -122,6 +134,7 @@ else
 
 	sed -i "s|Version = .*|Version = \"${KIC_VERSION}\"|;s|baseImageSHA = .*|baseImageSHA = \"${sha}\"|;s|gcrRepo = .*|gcrRepo = \"${GCR_REPO}\"|;s|dockerhubRepo = .*|dockerhubRepo = \"${DH_REPO}\"|" pkg/drivers/kic/types.go
 	make generate-docs
+	generate_package_list
 
 	git add pkg/drivers/kic/types.go site/content/en/docs/commands/start.md
 	git commit -m "Release: Update kicbase to ${KIC_VERSION}"

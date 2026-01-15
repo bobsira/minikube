@@ -37,13 +37,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/machine/libmachine/state"
 	"github.com/google/go-cmp/cmp"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/minikube/pkg/kapi"
+	"k8s.io/minikube/pkg/libmachine/state"
+	"k8s.io/minikube/pkg/minikube/detect"
 )
 
 // RunResult stores the result of an cmd.Run call
@@ -220,7 +221,15 @@ func PostMortemLogs(t *testing.T, profile string, multinode ...bool) {
 	}
 
 	t.Logf("-----------------------post-mortem--------------------------------")
-
+	t.Logf("======>  post-mortem[%s]: network settings <======", t.Name())
+	hostEnv := func(k string) string {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+		return "<empty>"
+	}
+	t.Logf("HOST ENV snapshots: PROXY env: HTTP_PROXY=%q HTTPS_PROXY=%q NO_PROXY=%q",
+		hostEnv("HTTP_PROXY"), hostEnv("HTTPS_PROXY"), hostEnv("NO_PROXY"))
 	for _, n := range nodes {
 		machine := profile
 		if n != profile {
@@ -289,7 +298,7 @@ func PostMortemLogs(t *testing.T, profile string, multinode ...bool) {
 // podStatusMsg returns a human-readable pod status, for generating debug status
 func podStatusMsg(pod core.Pod) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%q [%s] %s", pod.ObjectMeta.GetName(), pod.ObjectMeta.GetUID(), pod.Status.Phase))
+	sb.WriteString(fmt.Sprintf("%q [%s] %s", pod.GetName(), pod.GetUID(), pod.Status.Phase))
 	for i, c := range pod.Status.Conditions {
 		if c.Reason != "" {
 			if i == 0 {
@@ -337,7 +346,7 @@ func PodWait(ctx context.Context, t *testing.T, profile string, ns string, selec
 		}
 
 		for _, pod := range pods.Items {
-			foundNames[pod.ObjectMeta.Name] = true
+			foundNames[pod.Name] = true
 			msg := podStatusMsg(pod)
 			// Prevent spamming logs with identical messages
 			if msg != lastMsg {
@@ -435,6 +444,7 @@ func VolumeSnapshotWait(ctx context.Context, t *testing.T, profile string, ns st
 }
 
 // Status returns a minikube component status as a string
+// If the command outputs multiple lines, only the first line is returned to avoid https://github.com/kubernetes/minikube/issues/21326
 func Status(ctx context.Context, t *testing.T, path string, profile string, key string, node string) string {
 	t.Helper()
 	// Reminder of useful keys: "Host", "Kubelet", "APIServer"
@@ -442,7 +452,15 @@ func Status(ctx context.Context, t *testing.T, path string, profile string, key 
 	if err != nil {
 		t.Logf("status error: %v (may be ok)", err)
 	}
-	return strings.TrimSpace(rr.Stdout.String())
+	out := strings.TrimSpace(rr.Stdout.String())
+	if out == "" {
+		return out
+	}
+	// Take only the first line if multi-line (ignore warnings or extra notes)
+	if idx := strings.IndexByte(out, '\n'); idx >= 0 {
+		out = out[:idx]
+	}
+	return strings.TrimSpace(out)
 }
 
 // showPodLogs logs debug info for pods
@@ -476,7 +494,7 @@ func showPodLogs(ctx context.Context, t *testing.T, profile string, ns string, n
 // MaybeParallel sets that the test should run in parallel
 func MaybeParallel(t *testing.T) {
 	t.Helper()
-	// TODO: Allow paralellized tests on "none" that do not require independent clusters
+	// TODO: Allow parallelized tests on "none" that do not require independent clusters
 	if NoneDriver() {
 		return
 	}
@@ -686,4 +704,18 @@ func CopyDir(src, dst string) error {
 	}
 
 	return nil
+}
+
+// FailFast proactively stops the addon suite when Docker Hub is rate limited.
+func FailFastDockerHubRateLimited(t *testing.T) {
+	t.Helper()
+	remaining, err := detect.DockerHubRateLimitRemaining(t.Context())
+	if err != nil {
+		t.Logf("unable to check Docker Hub rate limit (continuing): %v", err)
+		return
+	}
+
+	if remaining <= 0 {
+		t.Fatalf("failing fast: Docker Hub rate limit reached (remaining=%d)", remaining)
+	}
 }

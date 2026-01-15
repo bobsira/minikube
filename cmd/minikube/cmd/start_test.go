@@ -30,9 +30,9 @@ import (
 	cfg "k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/cruntime"
-	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/proxy"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 func TestGetKubernetesVersion(t *testing.T) {
@@ -170,7 +170,7 @@ func TestMirrorCountry(t *testing.T) {
 			viper.SetDefault(imageRepository, test.imageRepository)
 			viper.SetDefault(imageMirrorCountry, test.mirrorCountry)
 			viper.SetDefault(kvmNUMACount, 1)
-			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, driver.Mock)
+			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, driver.Mock, &run.CommandOptions{})
 			if err != nil {
 				t.Fatalf("Got unexpected error %v during config generation", err)
 			}
@@ -231,7 +231,7 @@ func TestGenerateCfgFromFlagsHTTPProxyHandling(t *testing.T) {
 
 			cfg.DockerEnv = []string{} // clear docker env to avoid pollution
 			proxy.SetDockerEnv()
-			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, "none")
+			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, "none", &run.CommandOptions{})
 			if err != nil {
 				t.Fatalf("Got unexpected error %v during config generation", err)
 			}
@@ -278,26 +278,26 @@ func TestSuggestMemoryAllocation(t *testing.T) {
 		nodes          int
 		want           int
 	}{
-		{"128GB sys", 128000, 0, 1, 6000},
-		{"64GB sys", 64000, 0, 1, 6000},
-		{"32GB sys", 32768, 0, 1, 6000},
+		{"128GB sys", 128000, 0, 1, 6144},
+		{"64GB sys", 64000, 0, 1, 6144},
+		{"32GB sys", 32768, 0, 1, 6144},
 		{"16GB sys", 16384, 0, 1, 4000},
 		{"odd sys", 14567, 0, 1, 3600},
-		{"4GB sys", 4096, 0, 1, 2200},
+		{"4GB sys", 4096, 0, 1, 3072},
 		{"2GB sys", 2048, 0, 1, 2048},
-		{"Unable to poll sys", 0, 0, 1, 2200},
+		{"Unable to poll sys", 0, 0, 1, 3072},
 		{"128GB sys, 16GB container", 128000, 16384, 1, 16336},
 		{"64GB sys, 16GB container", 64000, 16384, 1, 16000},
 		{"16GB sys, 4GB container", 16384, 4096, 1, 4000},
 		{"4GB sys, 3.5GB container", 16384, 3500, 1, 3452},
 		{"16GB sys, 2GB container", 16384, 2048, 1, 2048},
 		{"16GB sys, unable to poll container", 16384, 0, 1, 4000},
-		{"128GB sys 2 nodes", 128000, 0, 2, 6000},
-		{"8GB sys 3 nodes", 8192, 0, 3, 2200},
-		{"16GB sys 2 nodes", 16384, 0, 2, 2200},
+		{"128GB sys 2 nodes", 128000, 0, 2, 6144},
+		{"8GB sys 3 nodes", 8192, 0, 3, 3072},
+		{"16GB sys 2 nodes", 16384, 0, 2, 3072},
 		{"32GB sys 2 nodes", 32768, 0, 2, 4050},
-		{"odd sys 2 nodes", 14567, 0, 2, 2200},
-		{"4GB sys 2 nodes", 4096, 0, 2, 2200},
+		{"odd sys 2 nodes", 14567, 0, 2, 3072},
+		{"4GB sys 2 nodes", 4096, 0, 2, 3072},
 		{"2GB sys 3 nodes", 2048, 0, 3, 2048},
 	}
 	for _, test := range tests {
@@ -654,171 +654,98 @@ func TestIsTwoDigitSemver(t *testing.T) {
 }
 
 func TestValidatePorts(t *testing.T) {
-	isMicrosoftWSL := detect.IsMicrosoftWSL()
 	type portTest struct {
-		// isTarget indicates whether or not the test case is covered
-		// because validatePorts behaves differently depending on whether process is running in WSL in windows or not.
-		isTarget bool
 		ports    []string
 		errorMsg string
 	}
 	var tests = []portTest{
 		{
-			isTarget: true,
 			ports:    []string{"8080:80"},
 			errorMsg: "",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"8080:80/tcp", "8080:80/udp"},
 			errorMsg: "",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"test:8080"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [test:8080] (Invalid hostPort: test)",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"0:80"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"0:80/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"65536:80/udp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [65536:80/udp] (Invalid hostPort: 65536)",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"0-1:80-81/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"0-1:80-81/udp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: !isMicrosoftWSL,
 			ports:    []string{"80:80", "1023-1025:8023-8025", "1023-1025:8023-8025/tcp", "1023-1025:8023-8025/udp"},
 			errorMsg: "",
 		},
 		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"80:80"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 80",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"1023-1025:8023-8025"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 1023",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"1023-1025:8023-8025/tcp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 1023",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"1023-1025:8023-8025/udp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 1023",
-		},
-		{
-			isTarget: true,
 			ports:    []string{"127.0.0.1:8080:80", "127.0.0.1:8081:80/tcp", "127.0.0.1:8081:80/udp", "127.0.0.1:8082-8083:8082-8083/tcp"},
 			errorMsg: "",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"1000.0.0.1:80:80"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [1000.0.0.1:80:80] (Invalid ip address: 1000.0.0.1)",
 		},
 		{
-			isTarget: !isMicrosoftWSL,
 			ports:    []string{"127.0.0.1:80:80", "127.0.0.1:81:81/tcp", "127.0.0.1:81:81/udp", "127.0.0.1:82-83:82-83/tcp", "127.0.0.1:82-83:82-83/udp"},
 			errorMsg: "",
 		},
 		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"127.0.0.1:80:80"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 80",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"127.0.0.1:81:81/tcp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 81",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"127.0.0.1:81:81/udp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 81",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"127.0.0.1:80-83:80-83/tcp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 80",
-		},
-		{
-			isTarget: isMicrosoftWSL,
-			ports:    []string{"127.0.0.1:80-83:80-83/udp"},
-			errorMsg: "Sorry, you cannot use privileged ports on the host (below 1024): 80",
-		},
-		{
-			isTarget: true,
 			ports:    []string{"80"},
 			errorMsg: "",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"80", "65535", "65536"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 65536",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"0", "80", "65535"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"cats"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid: cats",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"127.0.0.1:81:0/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is outside range: 0",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"127.0.0.1:81:65536/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [127.0.0.1:81:65536/tcp] (Invalid containerPort: 65536)",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"1-65536:80-81/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [1-65536:80-81/tcp] (Invalid hostPort: 1-65536)",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"1-80:0-81/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [1-80:0-81/tcp] (Invalid ranges specified for container and host Ports: 0-81 and 1-80)",
 		},
 		{
-			isTarget: true,
 			ports:    []string{"1-80:1-65536/tcp"},
 			errorMsg: "Sorry, one of the ports provided with --ports flag is not valid [1-80:1-65536/tcp] (Invalid containerPort: 1-65536)",
 		},
 	}
 	for _, test := range tests {
 		t.Run(strings.Join(test.ports, ","), func(t *testing.T) {
-			if !test.isTarget {
-				return
-			}
 			gotError := ""
 			got := validatePorts(test.ports)
 			if got != nil {
@@ -961,7 +888,10 @@ func TestValidateGPUs(t *testing.T) {
 		{"nvidia", "docker", "", ""},
 		{"all", "kvm", "docker", "The gpus flag can only be used with the docker driver and docker container-runtime"},
 		{"nvidia", "docker", "containerd", "The gpus flag can only be used with the docker driver and docker container-runtime"},
-		{"cat", "docker", "docker", `The gpus flag must be passed a value of "nvidia" or "all"`},
+		{"cat", "docker", "docker", `The gpus flag must be passed a value of "nvidia", "nvidia.com", "amd" or "all"`},
+		{"amd", "docker", "docker", ""},
+		{"amd", "docker", "", ""},
+		{"amd", "docker", "containerd", "The gpus flag can only be used with the docker driver and docker container-runtime"},
 	}
 
 	for _, tc := range tests {
@@ -997,7 +927,7 @@ func TestValidateAutoPause(t *testing.T) {
 			t.Errorf("interval of %q failed validation; expected it to pass: %v", input, err)
 		}
 		if err == nil && tc.shouldError {
-			t.Errorf("interval of %q passed validataion; expected it to fail: %v", input, err)
+			t.Errorf("interval of %q passed validation; expected it to fail: %v", input, err)
 		}
 	}
 }

@@ -31,7 +31,7 @@ minikube will try to automatically enable control-plane load-balancing if these 
 
 ## Caveat
 
-While a minikube HA cluster will continue to operate (although in degraded mode) after loosing any one control-plane node, keep in mind that there might be some components that are attached only to the primary control-plane node, like the storage-provisioner.
+While a minikube HA cluster will continue to operate (although in degraded mode) after losing any one control-plane node, keep in mind that there might be some components that are attached only to the primary control-plane node, like the storage-provisioner.
 
 ## Tutorial
 
@@ -185,7 +185,7 @@ users:
 - Overview of the current leader and follower API servers
 
 ```shell
-minikube ssh -p ha-demo -- 'sudo /var/lib/minikube/binaries/v1.28.4/kubectl --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo'
+minikube ssh -p ha-demo -- 'find /var/lib/minikube/binaries -iname kubectl -exec sudo {} --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo \; -quit'
 ```
 ```
 time="2024-03-14T21:38:34Z" level=info msg="Starting kube-vip.io [v0.7.1]"
@@ -205,7 +205,7 @@ time="2024-03-14T21:38:48Z" level=info msg="Added backend for [192.168.49.254:84
 ```
 
 ```shell
-minikube ssh -p ha-demo -- 'sudo /var/lib/minikube/binaries/v1.28.4/kubectl --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo-m02'
+minikube ssh -p ha-demo -- 'find /var/lib/minikube/binaries -iname kubectl -exec sudo {} --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo-m02 \; -quit'
 ```
 ```
 time="2024-03-14T21:38:25Z" level=info msg="Starting kube-vip.io [v0.7.1]"
@@ -218,7 +218,7 @@ time="2024-03-14T21:38:34Z" level=info msg="Node [ha-demo] is assuming leadershi
 ```
 
 ```shell
-minikube ssh -p ha-demo -- 'sudo /var/lib/minikube/binaries/v1.28.4/kubectl --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo-m03'
+minikube ssh -p ha-demo -- 'find /var/lib/minikube/binaries -iname kubectl -exec sudo {} --kubeconfig=/var/lib/minikube/kubeconfig logs -n kube-system pod/kube-vip-ha-demo-m03 \; -quit'
 ```
 ```
 time="2024-03-14T21:38:48Z" level=info msg="Starting kube-vip.io [v0.7.1]"
@@ -233,7 +233,7 @@ time="2024-03-14T21:38:48Z" level=info msg="Node [ha-demo] is assuming leadershi
 - Overview of multi-etcd instances
 
 ```shell
-minikube ssh -p ha-demo -- 'sudo /var/lib/minikube/binaries/v1.28.4/kubectl --kubeconfig=/var/lib/minikube/kubeconfig exec -ti pod/etcd-ha-demo -n kube-system -- /bin/sh -c "ETCDCTL_API=3 etcdctl member list --write-out=table --cacert=/var/lib/minikube/certs/etcd/ca.crt --cert=/var/lib/minikube/certs/etcd/server.crt --key=/var/lib/minikube/certs/etcd/server.key"'
+minikube ssh -p ha-demo -- 'find /var/lib/minikube/binaries -iname kubectl -exec sudo {} --kubeconfig=/var/lib/minikube/kubeconfig exec -ti pod/etcd-ha-demo -n kube-system -- /bin/sh -c "ETCDCTL_API=3 etcdctl member list --write-out=table --cacert=/var/lib/minikube/certs/etcd/ca.crt --cert=/var/lib/minikube/certs/etcd/server.crt --key=/var/lib/minikube/certs/etcd/server.key" \; -quit'
 ```
 ```
 +------------------+---------+-------------+---------------------------+---------------------------+------------+
@@ -245,7 +245,7 @@ minikube ssh -p ha-demo -- 'sudo /var/lib/minikube/binaries/v1.28.4/kubectl --ku
 +------------------+---------+-------------+---------------------------+---------------------------+------------+
 ```
 
-- Loosing a control-plane node - degrades cluster, but not a problem!
+- Losing a control-plane node - degrades cluster, but not a problem!
 
 ```shell
 minikube node delete m02 -p ha-demo

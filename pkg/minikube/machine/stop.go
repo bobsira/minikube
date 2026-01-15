@@ -19,13 +19,13 @@ package machine
 import (
 	"time"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/mcnerror"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/mcnerror"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/out/register"
@@ -96,9 +96,9 @@ func trySSHPowerOff(h *host.Host) error {
 		err := oci.ShutDown(h.DriverName, h.Name)
 		klog.Infof("shutdown container: err=%v", err)
 	} else {
-		out, err := h.RunSSHCommand("sudo poweroff")
+		rest, err := h.RunSSHCommand("sudo poweroff")
 		// poweroff always results in an error, since the host disconnects.
-		klog.Infof("poweroff result: out=%s, err=%v", out, err)
+		klog.Infof("poweroff result: out=%s, err=%v", rest, err)
 	}
 	return nil
 }

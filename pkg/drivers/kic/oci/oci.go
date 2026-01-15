@@ -30,8 +30,8 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
+	"k8s.io/minikube/pkg/libmachine/state"
 
 	"k8s.io/klog/v2"
 
@@ -182,7 +182,7 @@ func CreateContainerNode(p CreateParams) error { //nolint to suppress cyclomatic
 		"--label", p.ClusterLabel,
 		// label the node with the role ID
 		"--label", fmt.Sprintf("%s=%s", nodeRoleLabelKey, p.Role),
-		// label th enode wuth the node ID
+		// label th enode with the node ID
 		"--label", p.NodeLabel,
 	}
 	// to provide a static IP
@@ -190,8 +190,17 @@ func CreateContainerNode(p CreateParams) error { //nolint to suppress cyclomatic
 		runArgs = append(runArgs, "--network", p.Network)
 		runArgs = append(runArgs, "--ip", p.IP)
 	}
-	if p.GPUs != "" {
-		runArgs = append(runArgs, "--gpus", "all")
+
+	switch p.GPUs {
+	case "all", "nvidia":
+		runArgs = append(runArgs, "--gpus", "all", "--env", "NVIDIA_DRIVER_CAPABILITIES=all")
+	case "nvidia.com":
+		runArgs = append(runArgs, "--device", "nvidia.com/gpu=all")
+	case "amd":
+		/* https://rocm.docs.amd.com/projects/install-on-linux/en/latest/how-to/docker.html
+		 * "--security-opt seccomp=unconfined" is also required but included above.
+		 */
+		runArgs = append(runArgs, "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video", "--group-add", "render")
 	}
 
 	memcgSwap := hasMemorySwapCgroup()

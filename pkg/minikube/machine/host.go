@@ -17,10 +17,10 @@ limitations under the License.
 package machine
 
 import (
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/state"
 
 	"k8s.io/klog/v2"
 )
@@ -35,12 +35,12 @@ func Status(api libmachine.API, machineName string) (string, error) {
 		return state.None.String(), nil
 	}
 
-	host, err := api.Load(machineName)
+	hostInfo, err := api.Load(machineName)
 	if err != nil {
 		return "", errors.Wrapf(err, "load")
 	}
 
-	s, err := host.Driver.GetState()
+	s, err := hostInfo.Driver.GetState()
 	if err != nil {
 		return "", errors.Wrap(err, "state")
 	}

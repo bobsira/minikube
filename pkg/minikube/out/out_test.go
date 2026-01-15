@@ -33,7 +33,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/translate"
 )
 
-func TestOutT(t *testing.T) {
+func TestStep(t *testing.T) {
 	// Set the system locale to Arabic and define a dummy translation file.
 	translate.SetPreferredLanguage(language.Arabic)
 
@@ -54,7 +54,8 @@ func TestOutT(t *testing.T) {
 		{style.Fatal, "Fatal: {{.error}}", V{"error": "ugh"}, "💣  Fatal: ugh\n", "X Fatal: ugh\n"},
 		{style.Issue, "http://i/{{.number}}", V{"number": 10000}, "    ▪ http://i/10000\n", "  - http://i/10000\n"},
 		{style.Usage, "raw: {{.one}} {{.two}}", V{"one": "'%'", "two": "%d"}, "💡  raw: '%' %d\n", "* raw: '%' %d\n"},
-		{style.Running, "Installing Kubernetes version {{.version}} ...", V{"version": "v1.13"}, "🏃  ... v1.13 تثبيت Kubernetes الإصدار\n", "* ... v1.13 تثبيت Kubernetes الإصدار\n"},
+		// spinning steps do not support being unit tested with fake file writer, since passing the fake writer to the spininer library is not testable.
+		{style.Provisioning, "Installing Kubernetes version {{.version}} ...", V{"version": "v1.13"}, "🌱  ... v1.13 تثبيت Kubernetes الإصدار\n", "* ... v1.13 تثبيت Kubernetes الإصدار\n"},
 	}
 	for _, tc := range testCases {
 		for _, override := range []bool{true, false} {
@@ -70,14 +71,14 @@ func TestOutT(t *testing.T) {
 					want = tc.want
 				}
 				if got != want {
-					t.Errorf("OutStyle() = %q (%d runes), want %q (%d runes)", got, len(got), want, len(want))
+					t.Errorf("Step() = %q (%d runes), want %q (%d runes)", got, len(got), want, len(want))
 				}
 			})
 		}
 	}
 }
 
-func TestOut(t *testing.T) {
+func TestString(t *testing.T) {
 	t.Setenv(OverrideEnv, "")
 
 	testCases := []struct {
@@ -97,11 +98,11 @@ func TestOut(t *testing.T) {
 			if tc.arg == nil {
 				String(tc.format)
 			} else {
-				String(tc.format, tc.arg)
+				Stringf(tc.format, tc.arg)
 			}
 			got := f.String()
 			if got != tc.want {
-				t.Errorf("Out(%s, %s) = %q, want %q", tc.format, tc.arg, got, tc.want)
+				t.Errorf("String(%s, %s) = %q, want %q", tc.format, tc.arg, got, tc.want)
 			}
 		})
 	}
@@ -111,13 +112,27 @@ func TestErr(t *testing.T) {
 	t.Setenv(OverrideEnv, "0")
 	f := tests.NewFakeFile()
 	SetErrFile(f)
-	Err("xyz123 %s\n", "%s%%%d")
+	Err("xyz123\n")
+	Ln("unrelated message")
+	got := f.String()
+	want := "xyz123\n"
+
+	if got != want {
+		t.Errorf("Err() = %q, want %q", got, want)
+	}
+}
+
+func TestErrf(t *testing.T) {
+	t.Setenv(OverrideEnv, "0")
+	f := tests.NewFakeFile()
+	SetErrFile(f)
+	Errf("xyz123 %s\n", "%s%%%d")
 	Ln("unrelated message")
 	got := f.String()
 	want := "xyz123 %s%%%d\n"
 
 	if got != want {
-		t.Errorf("Err() = %q, want %q", got, want)
+		t.Errorf("Errf() = %q, want %q", got, want)
 	}
 }
 
@@ -215,6 +230,7 @@ func TestDisplayGitHubIssueMessage(t *testing.T) {
 		pflag.Parse()
 		f := tests.NewFakeFile()
 		SetErrFile(f)
+		alreadyShoweddGitHubIssueMessage = false // Reset the flag for each test case
 		displayGitHubIssueMessage()
 		output := f.String()
 		if strings.Contains(output, msg) && !tt.shouldContainMessage {

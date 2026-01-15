@@ -25,24 +25,24 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/auth"
-	"github.com/docker/machine/libmachine/cert"
-	"github.com/docker/machine/libmachine/check"
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/drivers/plugin"
-	"github.com/docker/machine/libmachine/drivers/plugin/localbinary"
-	"github.com/docker/machine/libmachine/engine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/mcnutils"
-	"github.com/docker/machine/libmachine/persist"
-	lmssh "github.com/docker/machine/libmachine/ssh"
-	"github.com/docker/machine/libmachine/state"
-	"github.com/docker/machine/libmachine/swarm"
-	"github.com/docker/machine/libmachine/version"
 	"github.com/juju/fslock"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/auth"
+	"k8s.io/minikube/pkg/libmachine/cert"
+	"k8s.io/minikube/pkg/libmachine/check"
+	"k8s.io/minikube/pkg/libmachine/drivers"
+	"k8s.io/minikube/pkg/libmachine/drivers/plugin"
+	"k8s.io/minikube/pkg/libmachine/drivers/plugin/localbinary"
+	"k8s.io/minikube/pkg/libmachine/engine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/mcnutils"
+	"k8s.io/minikube/pkg/libmachine/persist"
+	lmssh "k8s.io/minikube/pkg/libmachine/ssh"
+	"k8s.io/minikube/pkg/libmachine/state"
+	"k8s.io/minikube/pkg/libmachine/swarm"
+	"k8s.io/minikube/pkg/libmachine/version"
 	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/exit"
@@ -50,6 +50,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/reason"
 	"k8s.io/minikube/pkg/minikube/registry"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 // NewRPCClient gets a new client.
@@ -60,7 +61,7 @@ func NewRPCClient(storePath, certsDir string) libmachine.API {
 }
 
 // NewAPIClient gets a new client.
-func NewAPIClient(miniHome ...string) (libmachine.API, error) {
+func NewAPIClient(options *run.CommandOptions, miniHome ...string) (libmachine.API, error) {
 	storePath := localpath.MiniPath()
 	if len(miniHome) > 0 {
 		storePath = miniHome[0]
@@ -68,11 +69,12 @@ func NewAPIClient(miniHome ...string) (libmachine.API, error) {
 	certsDir := localpath.MakeMiniPath("certs")
 
 	return &LocalClient{
-		certsDir:     certsDir,
-		storePath:    storePath,
-		Filestore:    persist.NewFilestore(storePath, certsDir, certsDir),
-		legacyClient: NewRPCClient(storePath, certsDir),
-		flock:        fslock.New(localpath.MakeMiniPath("machine_client.lock")),
+		certsDir:       certsDir,
+		storePath:      storePath,
+		Filestore:      persist.NewFilestore(storePath, certsDir, certsDir),
+		legacyClient:   NewRPCClient(storePath, certsDir),
+		flock:          fslock.New(localpath.MakeMiniPath("machine_client.lock")),
+		commandOptions: options,
 	}, nil
 }
 
@@ -84,6 +86,9 @@ type LocalClient struct {
 	*persist.Filestore
 	legacyClient libmachine.API
 	flock        *fslock.Lock
+	// TODO: Consider removing when libmachine API is part of minikube:
+	// https://github.com/kubernetes/minikube/issues/21789
+	commandOptions *run.CommandOptions
 }
 
 // DefineGuest sets/tracks the guest OS for the host
@@ -100,7 +105,7 @@ func (api *LocalClient) NewHost(drvName string, guest host.Guest, rawDriver []by
 	if def.Init == nil {
 		return api.legacyClient.NewHost(drvName, guest, rawDriver)
 	}
-	d := def.Init()
+	d := def.Init(api.commandOptions)
 	err := json.Unmarshal(rawDriver, d)
 	if err != nil {
 		return nil, errors.Wrapf(err, "Error getting driver %s", string(rawDriver))
@@ -145,7 +150,7 @@ func (api *LocalClient) Load(name string) (*host.Host, error) {
 	if def.Init == nil {
 		return api.legacyClient.Load(name)
 	}
-	h.Driver = def.Init()
+	h.Driver = def.Init(api.commandOptions)
 	return h, json.Unmarshal(h.RawDriver, h.Driver)
 }
 
@@ -197,7 +202,7 @@ func (api *LocalClient) Create(h *host.Host) error {
 				// CA cert and client cert should be generated atomically, otherwise might cause bad certificate error.
 				lockErr := api.flock.LockWithTimeout(time.Second * 5)
 				if lockErr != nil {
-					return fmt.Errorf("failed to acquire bootstrap client lock: %v " + lockErr.Error())
+					return fmt.Errorf("failed to acquire bootstrap client lock: %v", lockErr)
 				}
 				defer func() {
 					lockErr = api.flock.Unlock()
@@ -258,11 +263,11 @@ func (api *LocalClient) Create(h *host.Host) error {
 }
 
 // StartDriver starts the driver
-func StartDriver() {
+func StartDriver(options *run.CommandOptions) {
 	cert.SetCertGenerator(&CertGenerator{})
 	check.DefaultConnChecker = &ConnChecker{}
 	if os.Getenv(localbinary.PluginEnvKey) == localbinary.PluginEnvVal {
-		registerDriver(os.Getenv(localbinary.PluginEnvDriverName))
+		registerDriver(os.Getenv(localbinary.PluginEnvDriverName), options)
 	}
 
 	localbinary.CurrentBinaryIsDockerMachine = true
@@ -306,10 +311,10 @@ func (cg *CertGenerator) ValidateCertificate(addr string, authOptions *auth.Opti
 	return true, nil
 }
 
-func registerDriver(drvName string) {
+func registerDriver(drvName string, options *run.CommandOptions) {
 	def := registry.Driver(drvName)
 	if def.Empty() {
 		exit.Message(reason.Usage, "unsupported or missing driver: {{.name}}", out.V{"name": drvName})
 	}
-	plugin.RegisterDriver(def.Init())
+	plugin.RegisterDriver(def.Init(options))
 }

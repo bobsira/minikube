@@ -29,19 +29,21 @@ import (
 
 var (
 	// SupportedArchitectures is the list of supported architectures
-	SupportedArchitectures = [5]string{"amd64", "arm", "arm64", "ppc64le", "s390x"}
+	SupportedArchitectures = [4]string{"amd64", "arm64", "ppc64le", "s390x"}
 	// IP Address for the control plane
 	MasterNodeIP = ""
 )
 
 const (
 	// DefaultKubernetesVersion is the default Kubernetes version
-	DefaultKubernetesVersion = "v1.30.3"
+	DefaultKubernetesVersion = "v1.35.0"
 	// NewestKubernetesVersion is the newest Kubernetes version to test against
 	// NOTE: You may need to update coreDNS & etcd versions in pkg/minikube/bootstrapper/images/images.go
-	NewestKubernetesVersion = "v1.31.0-rc.0"
+	NewestKubernetesVersion = "v1.35.0"
 	// OldestKubernetesVersion is the oldest Kubernetes version to test against
-	OldestKubernetesVersion = "v1.20.0"
+	// TODO: upodate to 6 releases before from DefaultKubernetesVersion
+	OldestKubernetesVersion = "v1.28.0"
+
 	// NoKubernetesVersion is the version used when users does NOT want to install kubernetes
 	NoKubernetesVersion = "v0.0.0"
 
@@ -163,6 +165,11 @@ const (
 	// MountUIDFlag is the flag used to set the mount UID
 	MountUIDFlag = "uid"
 
+	// FSType9p is 9p filesystem type
+	FSType9p = "9p"
+	// FSTypeVirtiofs is virtiofs filesystem type
+	FSTypeVirtiofs = "virtiofs"
+
 	// Mirror CN
 	AliyunMirror = "registry.cn-hangzhou.aliyuncs.com/google_containers"
 
@@ -212,7 +219,6 @@ var (
 	DefaultNamespaces = []string{
 		"kube-system",
 		"kubernetes-dashboard",
-		"storage-gluster",
 		"istio-operator",
 	}
 

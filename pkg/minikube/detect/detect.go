@@ -28,7 +28,6 @@ import (
 
 	"github.com/klauspost/cpuid"
 	"github.com/spf13/viper"
-	"golang.org/x/sys/cpu"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/localpath"
@@ -41,18 +40,7 @@ func RuntimeOS() string {
 
 // RuntimeArch returns the runtime architecture
 func RuntimeArch() string {
-	arch := runtime.GOARCH
-	if arch == "arm" {
-		// runtime.GOARM
-		if !cpu.ARM.HasVFP {
-			return "arm/v5"
-		}
-		if !cpu.ARM.HasVFPv3 {
-			return "arm/v6"
-		}
-		// "arm" (== "arm/v7")
-	}
-	return arch
+	return runtime.GOARCH
 }
 
 // IsMicrosoftWSL will return true if process is running in WSL in windows
@@ -211,4 +199,36 @@ func MacOS13Plus() bool {
 		return false
 	}
 	return major >= 13
+}
+
+// NestedVM returns true if the current machine is running a nested VM (like in MacOs in Github Action)
+// this func tries its best but not guaranteed to be 100% accurate, and if not sure will return false (default behaviour).
+func NestedVM() bool {
+	if runtime.GOOS == "linux" {
+		c := exec.Command("systemd-detect-virt", "--quiet")
+		_, err := c.Output()
+		if err == nil {
+			klog.Infof("nested VM detected")
+			return true
+		}
+		return false // On a bare-metal system, it exits with code 1 and outputs "none".
+
+	}
+
+	if runtime.GOOS == "darwin" {
+		c := exec.Command("sysctl", "-n", "kern.hv_vmm_present")
+		o, err := c.Output()
+		if err != nil {
+			klog.Warningf("Failed to check for nested VM: %v", err)
+			return false
+		}
+		// kern.hv_vmm_present returns "1" if running in a VM, "0" on bare metal
+		value := strings.TrimSpace(string(o))
+		if value == "1" {
+			klog.Infof("nested VM detected (kern.hv_vmm_present=%s)", value)
+			return true
+		}
+		return false
+	}
+	return false
 }

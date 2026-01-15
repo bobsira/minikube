@@ -27,14 +27,15 @@ import (
 
 	dockerref "github.com/distribution/reference"
 
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/cruntime"
 	"k8s.io/minikube/pkg/minikube/localpath"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/vmpath"
 )
 
@@ -42,8 +43,8 @@ import (
 var buildRoot = path.Join(vmpath.GuestPersistentDir, "build")
 
 // BuildImage builds image to all profiles
-func BuildImage(path string, file string, tag string, push bool, env []string, opt []string, profiles []*config.Profile, allNodes bool, nodeName string) error {
-	api, err := NewAPIClient()
+func BuildImage(srcPath string, file string, tag string, push bool, env []string, opt []string, profiles []*config.Profile, allNodes bool, nodeName string, options *run.CommandOptions) error {
+	api, err := NewAPIClient(options)
 	if err != nil {
 		return errors.Wrap(err, "api")
 	}
@@ -52,12 +53,12 @@ func BuildImage(path string, file string, tag string, push bool, env []string, o
 	succeeded := []string{}
 	failed := []string{}
 
-	u, err := url.Parse(path)
+	u, err := url.Parse(srcPath)
 	if err == nil && u.Scheme == "file" {
-		path = u.Path
+		srcPath = u.Path
 	}
 	remote := err == nil && u.Scheme != ""
-	if runtime.GOOS == "windows" && filepath.VolumeName(path) != "" {
+	if runtime.GOOS == "windows" && filepath.VolumeName(srcPath) != "" {
 		remote = false
 	}
 
@@ -116,9 +117,9 @@ func BuildImage(path string, file string, tag string, push bool, env []string, o
 					return err
 				}
 				if remote {
-					err = buildImage(cr, c.KubernetesConfig, path, file, tag, push, env, opt)
+					err = buildImage(cr, c.KubernetesConfig, srcPath, file, tag, push, env, opt)
 				} else {
-					err = transferAndBuildImage(cr, c.KubernetesConfig, path, file, tag, push, env, opt)
+					err = transferAndBuildImage(cr, c.KubernetesConfig, srcPath, file, tag, push, env, opt)
 				}
 				if err != nil {
 					failed = append(failed, m)

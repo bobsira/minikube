@@ -37,9 +37,9 @@ var FOLDER = "site/static/images/benchmarks/cpuUsage/autoPause"
 
 type integerTicks struct{}
 
-func (integerTicks) Ticks(min, max float64) []plot.Tick {
+func (integerTicks) Ticks(minimum, maximum float64) []plot.Tick {
 	var t []plot.Tick
-	for i := math.Trunc(min); i <= max; i += 50 {
+	for i := math.Trunc(minimum); i <= maximum; i += 50 {
 		t = append(t, plot.Tick{Value: i, Label: fmt.Sprint(i)})
 	}
 	return t
@@ -63,11 +63,13 @@ func execute() error {
 	p := plot.New()
 
 	// Set view options
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		p.Title.Text = "CPU% Busy Overhead - With Auto Pause vs. Non Auto Pause (less is better)"
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		p.Title.Text = "CPU% Busy Overhead - With Auto Pause vs. Non Auto Pause (less is better)"
 	}
+
 	p.Y.Label.Text = "CPU overhead%"
 
 	// Open non-autopause csv file of benchmark summary
@@ -158,9 +160,10 @@ func execute() error {
 	p.Legend.Top = true
 
 	// Add x-lay names
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		p.NominalX("OS idle", "minikube hyperkit", "minikube virtualbox", "minikube docker", "Docker for Mac Kubernetes", "k3d", "kind")
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		p.NominalX("OS idle", "minikube kvm2", "minikube virtualbox", "minikube docker", "Docker idle", "k3d", "kind")
 	}
 
@@ -223,16 +226,18 @@ func execute() error {
 	p.Add(napl, apl)
 
 	// Output bar graph
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		if err := p.Save(13*vg.Inch, 8*vg.Inch, FOLDER+"/mac.png"); err != nil {
 			return errors.Wrap(err, "Failed to create bar graph png")
 		}
 		log.Printf("Generated graph png to %s/mac.png", FOLDER)
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		if err := p.Save(13*vg.Inch, 10*vg.Inch, FOLDER+"/linux.png"); err != nil {
 			return errors.Wrap(err, "Failed to create bar graph png")
 		}
 		log.Printf("Generated graph png to %s/linux.png", FOLDER)
 	}
+
 	return nil
 }

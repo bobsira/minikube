@@ -29,15 +29,15 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/engine"
-	"github.com/docker/machine/libmachine/host"
 	"github.com/juju/mutex/v2"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/drivers"
+	"k8s.io/minikube/pkg/libmachine/engine"
+	"k8s.io/minikube/pkg/libmachine/host"
 	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
@@ -106,7 +106,7 @@ func StartHost(api libmachine.API, cfg *config.ClusterConfig, n *config.Node) (*
 func engineOptions(cfg config.ClusterConfig) *engine.Options {
 	// get docker env from user's proxy settings
 	dockerEnv := proxy.SetDockerEnv()
-	// get docker env from user specifiec config
+	// get docker env from user specific config
 	dockerEnv = append(dockerEnv, cfg.DockerEnv...)
 
 	uniqueEnvs := util.RemoveDuplicateStrings(dockerEnv)
@@ -425,7 +425,7 @@ func AddHostAlias(c command.Runner, name string, ip net.IP) error {
 	return nil
 }
 
-func addHostAliasCommand(name string, record string, sudo bool, path string) *exec.Cmd {
+func addHostAliasCommand(name string, record string, sudo bool, destPath string) *exec.Cmd {
 	sudoCmd := "sudo"
 	if !sudo { // for testing
 		sudoCmd = ""
@@ -434,10 +434,10 @@ func addHostAliasCommand(name string, record string, sudo bool, path string) *ex
 	script := fmt.Sprintf(
 		`{ grep -v $'\t%s$' "%s"; echo "%s"; } > /tmp/h.$$; %s cp /tmp/h.$$ "%s"`,
 		name,
-		path,
+		destPath,
 		record,
 		sudoCmd,
-		path)
+		destPath)
 	return exec.Command("/bin/bash", "-c", script)
 }
 

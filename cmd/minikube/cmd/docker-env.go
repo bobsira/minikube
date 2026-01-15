@@ -25,7 +25,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +35,7 @@ import (
 	"gopkg.in/yaml.v2"
 	"k8s.io/klog/v2"
 
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/drivers/qemu"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil/kverify"
@@ -272,6 +272,7 @@ docker-cli install instructions: https://minikube.sigs.k8s.io/docs/tutorials/doc
 	Run: func(_ *cobra.Command, _ []string) {
 		var err error
 
+		options := flags.CommandOptions()
 		shl := shell.ForceShell
 		if shl == "" {
 			shl, err = shell.Detect()
@@ -297,7 +298,7 @@ docker-cli install instructions: https://minikube.sigs.k8s.io/docs/tutorials/doc
 
 		cname := ClusterFlagValue()
 
-		co := mustload.Running(cname)
+		co := mustload.Running(cname, options)
 
 		driverName := co.CP.Host.DriverName
 
@@ -309,7 +310,6 @@ docker-cli install instructions: https://minikube.sigs.k8s.io/docs/tutorials/doc
 			exit.Message(reason.EnvMultiConflict, `The docker-env command is incompatible with multi-node clusters. Use the 'registry' add-on: https://minikube.sigs.k8s.io/docs/handbook/registry/`)
 		}
 		cr := co.Config.KubernetesConfig.ContainerRuntime
-		// nerdctld supports amd64 and arm64
 		if err := dockerEnvSupported(cr, driverName); err != nil {
 			exit.Message(reason.Usage, err.Error())
 		}
@@ -318,7 +318,7 @@ docker-cli install instructions: https://minikube.sigs.k8s.io/docs/tutorials/doc
 		if cr == constants.Containerd {
 			out.WarningT("Using the docker-env command with the containerd runtime is a highly experimental feature, please provide feedback or contribute to make it better")
 
-			startNerdctld()
+			startNerdctld(options)
 
 			// docker-env on containerd depends on nerdctld (https://github.com/afbjorklund/nerdctld) as "docker" daeomn
 			// and nerdctld daemon must be used with ssh connection (it is set in kicbase image's Dockerfile)
@@ -332,7 +332,7 @@ docker-cli install instructions: https://minikube.sigs.k8s.io/docs/tutorials/doc
 			}
 			// cluster config must be reloaded
 			// otherwise we won't be able to get SSH_AUTH_SOCK and SSH_AGENT_PID from cluster config.
-			co = mustload.Running(cname)
+			co = mustload.Running(cname, options)
 
 			// set the ssh-agent envs for current process
 			os.Setenv("SSH_AUTH_SOCK", co.Config.SSHAuthSock)
@@ -464,7 +464,6 @@ func dockerSetScript(ec DockerEnvConfig, w io.Writer) error {
 		switch outputFormat {
 		case "":
 			// shell "none"
-			break
 		case "text":
 			for k, v := range envVars {
 				_, err := fmt.Fprintf(w, "%s=%s\n", k, v)
@@ -474,11 +473,11 @@ func dockerSetScript(ec DockerEnvConfig, w io.Writer) error {
 			}
 			return nil
 		case "json":
-			json, err := json.Marshal(envVars)
+			jsondata, err := json.Marshal(envVars)
 			if err != nil {
 				return err
 			}
-			_, err = w.Write(json)
+			_, err = w.Write(jsondata)
 			if err != nil {
 				return err
 			}
@@ -488,11 +487,11 @@ func dockerSetScript(ec DockerEnvConfig, w io.Writer) error {
 			}
 			return nil
 		case "yaml":
-			yaml, err := yaml.Marshal(envVars)
+			yamldata, err := yaml.Marshal(envVars)
 			if err != nil {
 				return err
 			}
-			_, err = w.Write(yaml)
+			_, err = w.Write(yamldata)
 			if err != nil {
 				return err
 			}
@@ -511,7 +510,6 @@ func dockerUnsetScript(ec DockerEnvConfig, w io.Writer) error {
 		switch outputFormat {
 		case "":
 			// shell "none"
-			break
 		case "text":
 			for _, n := range vars {
 				_, err := fmt.Fprintf(w, "%s\n", n)
@@ -521,11 +519,11 @@ func dockerUnsetScript(ec DockerEnvConfig, w io.Writer) error {
 			}
 			return nil
 		case "json":
-			json, err := json.Marshal(vars)
+			jsondata, err := json.Marshal(vars)
 			if err != nil {
 				return err
 			}
-			_, err = w.Write(json)
+			_, err = w.Write(jsondata)
 			if err != nil {
 				return err
 			}
@@ -535,11 +533,11 @@ func dockerUnsetScript(ec DockerEnvConfig, w io.Writer) error {
 			}
 			return nil
 		case "yaml":
-			yaml, err := yaml.Marshal(vars)
+			yamldata, err := yaml.Marshal(vars)
 			if err != nil {
 				return err
 			}
-			_, err = w.Write(yaml)
+			_, err = w.Write(yamldata)
 			if err != nil {
 				return err
 			}
@@ -674,9 +672,6 @@ func tryDockerConnectivity(bin string, ec DockerEnvConfig) ([]byte, error) {
 }
 
 func dockerEnvSupported(containerRuntime, driverName string) error {
-	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
-		return fmt.Errorf("the docker-env command only supports amd64 & arm64 architectures")
-	}
 	if containerRuntime != constants.Docker && containerRuntime != constants.Containerd {
 		return fmt.Errorf("the docker-env command only supports the docker and containerd runtimes")
 	}

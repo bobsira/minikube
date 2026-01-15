@@ -42,12 +42,13 @@ import (
 	// Force exp dependency
 	_ "golang.org/x/exp/ebnf"
 
-	mlog "github.com/docker/machine/libmachine/log"
+	mlog "k8s.io/minikube/pkg/libmachine/log"
 
 	"github.com/google/slowjam/pkg/stacklog"
 	"github.com/pkg/profile"
 
 	"k8s.io/minikube/cmd/minikube/cmd"
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/machine"
 	"k8s.io/minikube/pkg/minikube/out"
@@ -70,6 +71,7 @@ var (
 )
 
 func main() {
+	options := flags.CommandOptions()
 	bridgeLogMessages()
 	defer klog.Flush()
 
@@ -88,7 +90,7 @@ func main() {
 		defer profile.Start(profile.TraceProfile).Stop()
 	}
 	if os.Getenv(constants.IsMinikubeChildProcess) == "" {
-		machine.StartDriver()
+		machine.StartDriver(options)
 	}
 	out.SetOutFile(os.Stdout)
 	out.SetErrFile(os.Stderr)
@@ -131,13 +133,14 @@ type machineLogBridge struct{}
 
 // Write passes machine driver logs to klog
 func (lb machineLogBridge) Write(b []byte) (n int, err error) {
-	if machineLogEnvironmentRe.Match(b) {
+	switch {
+	case machineLogEnvironmentRe.Match(b):
 		return len(b), nil
-	} else if machineLogErrorRe.Match(b) {
+	case machineLogErrorRe.Match(b):
 		klog.Errorf("libmachine: %s", b)
-	} else if machineLogWarningRe.Match(b) {
+	case machineLogWarningRe.Match(b):
 		klog.Warningf("libmachine: %s", b)
-	} else {
+	default:
 		klog.Infof("libmachine: %s", b)
 	}
 	return len(b), nil
@@ -156,13 +159,13 @@ func checkLogFileMaxSize(file string, maxSizeKB int64) bool {
 // logFileName generates a default logfile name in the form minikube_<argv[1]>_<hash>_<count>.log from args
 func logFileName(dir string, logIdx int64) string {
 	h := sha1.New()
-	user, err := user.Current()
+	userInfo, err := user.Current()
 	if err != nil {
 		klog.Warningf("Unable to get username to add to log filename hash: %v", err)
 	} else {
-		_, err := h.Write([]byte(user.Username))
+		_, err := h.Write([]byte(userInfo.Username))
 		if err != nil {
-			klog.Warningf("Unable to add username %s to log filename hash: %v", user.Username, err)
+			klog.Warningf("Unable to add username %s to log filename hash: %v", userInfo.Username, err)
 		}
 	}
 	for _, s := range pflag.Args() {
@@ -189,7 +192,7 @@ func logFileName(dir string, logIdx int64) string {
 func setFlags(parse bool) {
 	// parse flags beyond subcommand - get around go flag 'limitations':
 	// "Flag parsing stops just before the first non-flag argument" (ref: https://pkg.go.dev/flag#hdr-Command_line_flag_syntax)
-	pflag.CommandLine.ParseErrorsWhitelist.UnknownFlags = true
+	pflag.CommandLine.ParseErrorsAllowlist.UnknownFlags = true
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	// avoid 'pflag: help requested' error, as help will be defined later by cobra cmd.Execute()
 	pflag.BoolP("help", "h", false, "")
@@ -289,6 +292,7 @@ func propagateDockerContextToEnv() {
 	md, err := st.GetMetadata(currentContext)
 	if err != nil {
 		klog.Warningf("Unable to resolve the current Docker CLI context %q: %v", currentContext, err)
+		klog.Warningf("Try running `docker context use %s` to resolve the above error", currentContext)
 		return
 	}
 	dockerEP, ok := md.Endpoints[ddocker.DockerEndpoint]

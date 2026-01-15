@@ -39,10 +39,6 @@ var (
 	//go:embed storage-provisioner/storage-provisioner.yaml.tmpl
 	StorageProvisionerAssets embed.FS
 
-	// StorageProvisionerGlusterAssets assets for storage-provisioner-gluster addon
-	//go:embed storage-provisioner-gluster/*.tmpl storage-provisioner-gluster/*.yaml
-	StorageProvisionerGlusterAssets embed.FS
-
 	// StorageProvisionerRancherAssets assets for storage-provisioner-rancher addon
 	//go:embed storage-provisioner-rancher/*.tmpl
 	StorageProvisionerRancherAssets embed.FS
@@ -64,7 +60,7 @@ var (
 	IstioAssets embed.FS
 
 	// InspektorGadgetAssets assets for inspektor-gadget addon
-	//go:embed inspektor-gadget/*.tmpl inspektor-gadget/*.yaml
+	//go:embed inspektor-gadget/*.tmpl
 	InspektorGadgetAssets embed.FS
 
 	// KongAssets assets for kong addon
@@ -107,6 +103,10 @@ var (
 	//go:embed gpu/nvidia-gpu-device-plugin.yaml.tmpl
 	NvidiaGpuDevicePluginAssets embed.FS
 
+	// AmdGpuDevicePluginAssets assets for amd-gpu-device-plugin addon
+	//go:embed gpu/amd-gpu-device-plugin.yaml.tmpl
+	AmdGpuDevicePluginAssets embed.FS
+
 	// LogviewerAssets assets for logviewer addon
 	//go:embed logviewer/*.tmpl logviewer/*.yaml
 	LogviewerAssets embed.FS
@@ -114,10 +114,6 @@ var (
 	// GvisorAssets assets for gvisor addon
 	//go:embed gvisor/*.tmpl
 	GvisorAssets embed.FS
-
-	// HelmTillerAssets assets for helm-tiller addon
-	//go:embed helm-tiller/*.tmpl helm-tiller/*.yaml
-	HelmTillerAssets embed.FS
 
 	// IngressDNSAssets assets for ingress-dns addon
 	//go:embed ingress-dns/ingress-dns-pod.yaml.tmpl
@@ -135,7 +131,7 @@ var (
 	//go:embed gcp-auth/*.tmpl gcp-auth/*.yaml
 	GcpAuthAssets embed.FS
 
-	// Volcano assets for volcano addon
+	// VolcanoAssets assets for volcano addon
 	//go:embed volcano/*.tmpl
 	VolcanoAssets embed.FS
 
@@ -178,4 +174,8 @@ var (
 	// YakdAssets assets for yakd addon
 	//go:embed yakd/*.yaml yakd/*.tmpl
 	YakdAssets embed.FS
+
+	// Kubetail assets for kubetail addon
+	//go:embed kubetail/*.yaml kubetail/*.tmpl
+	KubetailAssets embed.FS
 )

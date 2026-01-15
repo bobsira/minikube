@@ -64,10 +64,7 @@ func TestIsInBlock(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("%s in %s Want: %t WantAErr: %t", tc.ip, tc.block, tc.want, tc.wanntAErr), func(t *testing.T) {
 			got, err := isInBlock(tc.ip, tc.block)
-			gotErr := false
-			if err != nil {
-				gotErr = true
-			}
+			gotErr := err != nil
 			if gotErr != tc.wanntAErr {
 				t.Errorf("isInBlock(%v,%v) got error is %v ; want error is %v", tc.ip, tc.block, gotErr, tc.wanntAErr)
 			}
@@ -226,4 +223,112 @@ func TestUpdateTransport(t *testing.T) {
 			t.Fatalf("Expected RoundTripper nil for invocation WrapTransport(nil)")
 		}
 	})
+}
+func TestMaskProxyPassword(t *testing.T) {
+	type dockerOptTest struct {
+		input  string
+		output string
+	}
+	var tests = []dockerOptTest{
+		{
+			input:  "cats",
+			output: "cats",
+		},
+		{
+			input:  "myDockerOption=value",
+			output: "myDockerOption=value",
+		},
+		{
+			input:  "http://minikube.sigs.k8s.io",
+			output: "http://minikube.sigs.k8s.io",
+		},
+		{
+			input:  "http://jdoe@minikube.sigs.k8s.io:8080",
+			output: "http://jdoe@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "https://mary:iam$Fake!password@minikube.sigs.k8s.io:8080",
+			output: "https://mary:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http://jdoe:%n0tRe@al:Password!@minikube.sigs.k8s.io:8080",
+			output: "http://jdoe:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http://jo@han:n0tRe@al:&Password!@minikube.sigs.k8s.io:8080",
+			output: "http://jo@han:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http://k@r3n!:an0th3erF@akeP@55word@minikube.sigs.k8s.io",
+			output: "http://k@r3n!:*****@minikube.sigs.k8s.io",
+		},
+		{
+			input:  "https://fr@ank5t3in:an0th3erF@akeP@55word@minikube.sigs.k8s.io",
+			output: "https://fr@ank5t3in:*****@minikube.sigs.k8s.io",
+		}, {
+			input:  "http://aaa:bbb@internet-app.corp.abcd:8080",
+			output: "http://aaa:*****@internet-app.corp.abcd:8080",
+		},
+		{
+			input:  "https://aaa:bbb@internet-app.corp.abcd:8080",
+			output: "https://aaa:*****@internet-app.corp.abcd:8080",
+		},
+	}
+	for _, test := range tests {
+		got := MaskProxyPassword(test.input)
+		if got != test.output {
+			t.Errorf("MaskProxyPassword(\"%v\"): got %v, expected %v", test.input, got, test.output)
+		}
+	}
+}
+
+func TestMaskProxyPasswordWithKey(t *testing.T) {
+	type dockerOptTest struct {
+		input  string
+		output string
+	}
+	var tests = []dockerOptTest{
+		{
+			input:  "cats",
+			output: "cats",
+		},
+		{
+			input:  "myDockerOption=value",
+			output: "myDockerOption=value",
+		},
+		{
+			input:  "http_proxy=http://minikube.sigs.k8s.io",
+			output: "HTTP_PROXY=http://minikube.sigs.k8s.io",
+		},
+		{
+			input:  "https_proxy=http://jdoe@minikube.sigs.k8s.io:8080",
+			output: "HTTPS_PROXY=http://jdoe@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "https_proxy=https://mary:iam$Fake!password@minikube.sigs.k8s.io:8080",
+			output: "HTTPS_PROXY=https://mary:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http_proxy=http://jdoe:%n0tRe@al:Password!@minikube.sigs.k8s.io:8080",
+			output: "HTTP_PROXY=http://jdoe:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http_proxy=http://jo@han:n0tRe@al:&Password!@minikube.sigs.k8s.io:8080",
+			output: "HTTP_PROXY=http://jo@han:*****@minikube.sigs.k8s.io:8080",
+		},
+		{
+			input:  "http_proxy=http://k@r3n!:an0th3erF@akeP@55word@minikube.sigs.k8s.io",
+			output: "HTTP_PROXY=http://k@r3n!:*****@minikube.sigs.k8s.io",
+		},
+		{
+			input:  "https_proxy=https://fr@ank5t3in:an0th3erF@akeP@55word@minikube.sigs.k8s.io",
+			output: "HTTPS_PROXY=https://fr@ank5t3in:*****@minikube.sigs.k8s.io",
+		},
+	}
+	for _, test := range tests {
+		got := MaskProxyPasswordWithKey(test.input)
+		if got != test.output {
+			t.Errorf("MaskProxyPasswordWithKey(\"%v\"): got %v, expected %v", test.input, got, test.output)
+		}
+	}
 }

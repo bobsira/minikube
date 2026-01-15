@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
@@ -265,7 +266,7 @@ func (r *Containerd) Disable() error {
 // ImageExists checks if image exists based on image name and optionally image sha
 func (r *Containerd) ImageExists(name string, sha string) bool {
 	klog.Infof("Checking existence of image with name %q and sha %q", name, sha)
-	c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "check")
+	c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "ls", fmt.Sprintf("name==%s", name))
 	// note: image name and image id's sha can be on different lines in ctr output
 	if rr, err := r.Runner.RunCmd(c); err != nil ||
 		!strings.Contains(rr.Output(), name) ||
@@ -281,13 +282,20 @@ func (r *Containerd) ListImages(ListImagesOptions) ([]ListImage, error) {
 }
 
 // LoadImage loads an image into this runtime
-func (r *Containerd) LoadImage(path string) error {
-	klog.Infof("Loading image: %s", path)
-	c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "import", path)
-	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrapf(err, "ctr images import")
-	}
-	return nil
+func (r *Containerd) LoadImage(imagePath string) error {
+	klog.Infof("Loading image: %s", imagePath)
+	// retry up to 3 times handle transient "short read" or "unexpected EOF" errors example #22309
+	return retry.Expo(func() error {
+		c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "import", imagePath)
+		if _, err := r.Runner.RunCmd(c); err != nil {
+			// Only retry on transient "short read" or "unexpected EOF" errors
+			if strings.Contains(err.Error(), "short read") || strings.Contains(err.Error(), "unexpected EOF") {
+				return errors.Wrapf(err, "ctr images import")
+			}
+			return backoff.Permanent(errors.Wrapf(err, "ctr images import"))
+		}
+		return nil
+	}, 250*time.Millisecond, 2*time.Minute, 3)
 }
 
 // PullImage pulls an image into this runtime
@@ -296,9 +304,9 @@ func (r *Containerd) PullImage(name string) error {
 }
 
 // SaveImage save an image from this runtime
-func (r *Containerd) SaveImage(name string, path string) error {
-	klog.Infof("Saving image %s: %s", name, path)
-	c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "export", path, name)
+func (r *Containerd) SaveImage(name string, destPath string) error {
+	klog.Infof("Saving image %s: %s", name, destPath)
+	c := exec.Command("sudo", "ctr", "-n=k8s.io", "images", "export", destPath, name)
 	if _, err := r.Runner.RunCmd(c); err != nil {
 		return errors.Wrapf(err, "ctr images export")
 	}
@@ -307,7 +315,7 @@ func (r *Containerd) SaveImage(name string, path string) error {
 
 // RemoveImage removes a image
 func (r *Containerd) RemoveImage(name string) error {
-	return removeCRIImage(r.Runner, name)
+	return removeCRIImage(r.Runner, name, false)
 }
 
 // TagImage tags an image in this runtime
@@ -507,13 +515,13 @@ func (r *Containerd) StopContainers(ids []string) error {
 }
 
 // ContainerLogCmd returns the command to retrieve the log for a container based on ID
-func (r *Containerd) ContainerLogCmd(id string, len int, follow bool) string {
-	return criContainerLogCmd(r.Runner, id, len, follow)
+func (r *Containerd) ContainerLogCmd(id string, length int, follow bool) string {
+	return criContainerLogCmd(r.Runner, id, length, follow)
 }
 
 // SystemLogCmd returns the command to retrieve system logs
-func (r *Containerd) SystemLogCmd(len int) string {
-	return fmt.Sprintf("sudo journalctl -u containerd -n %d", len)
+func (r *Containerd) SystemLogCmd(length int) string {
+	return fmt.Sprintf("sudo journalctl -u containerd -n %d", length)
 }
 
 // Preload preloads the container runtime with k8s images
@@ -526,11 +534,11 @@ func (r *Containerd) Preload(cc config.ClusterConfig) error {
 	cRuntime := cc.KubernetesConfig.ContainerRuntime
 
 	// If images already exist, return
-	images, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
+	imgs, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
 	if err != nil {
 		return errors.Wrap(err, "getting images")
 	}
-	if containerdImagesPreloaded(r.Runner, images) {
+	if containerdImagesPreloaded(r.Runner, imgs) {
 		klog.Info("Images already preloaded, skipping extraction")
 		return nil
 	}
@@ -583,7 +591,7 @@ func (r *Containerd) Restart() error {
 }
 
 // containerdImagesPreloaded returns true if all images have been preloaded
-func containerdImagesPreloaded(runner command.Runner, images []string) bool {
+func containerdImagesPreloaded(runner command.Runner, imgs []string) bool {
 	var rr *command.RunResult
 
 	imageList := func() (err error) {
@@ -604,7 +612,7 @@ func containerdImagesPreloaded(runner command.Runner, images []string) bool {
 	}
 
 	// Make sure images == imgs
-	for _, i := range images {
+	for _, i := range imgs {
 		found := false
 		for _, ji := range jsonImages.Images {
 			for _, rt := range ji.RepoTags {
@@ -629,6 +637,6 @@ func containerdImagesPreloaded(runner command.Runner, images []string) bool {
 }
 
 // ImagesPreloaded returns true if all images have been preloaded
-func (r *Containerd) ImagesPreloaded(images []string) bool {
-	return containerdImagesPreloaded(r.Runner, images)
+func (r *Containerd) ImagesPreloaded(imgs []string) bool {
+	return containerdImagesPreloaded(r.Runner, imgs)
 }

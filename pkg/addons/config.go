@@ -18,14 +18,15 @@ package addons
 
 import (
 	"k8s.io/minikube/pkg/minikube/config"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
-type setFn func(*config.ClusterConfig, string, string) error
+type setFn func(*config.ClusterConfig, string, string, *run.CommandOptions) error
 
 // Addon represents an addon
 type Addon struct {
 	name        string
-	set         func(*config.ClusterConfig, string, string) error
+	set         func(*config.ClusterConfig, string, string, *run.CommandOptions) error
 	validations []setFn
 	callbacks   []setFn
 }
@@ -75,11 +76,6 @@ var Addons = []*Addon{
 		callbacks:   []setFn{EnableOrDisableAddon, verifyAddonStatus},
 	},
 	{
-		name:      "helm-tiller",
-		set:       SetBool,
-		callbacks: []setFn{EnableOrDisableAddon},
-	},
-	{
 		name:      "ingress",
 		set:       SetBool,
 		callbacks: []setFn{EnableOrDisableAddon, verifyAddonStatus},
@@ -110,6 +106,11 @@ var Addons = []*Addon{
 		callbacks: []setFn{EnableOrDisableAddon},
 	},
 	{
+		name:      "kubetail",
+		set:       SetBool,
+		callbacks: []setFn{EnableOrDisableAddon},
+	},
+	{
 		name:      "kubevirt",
 		set:       SetBool,
 		callbacks: []setFn{EnableOrDisableAddon},
@@ -131,10 +132,16 @@ var Addons = []*Addon{
 		callbacks:   []setFn{EnableOrDisableAddon},
 	},
 	{
+		// The nvidia-gpu-device-plugin addon is deprecated and it's functionality is merged inside of nvidia-device-plugin addon.
 		name:        "nvidia-gpu-device-plugin",
 		set:         SetBool,
 		validations: []setFn{isKVMDriverForNVIDIA},
 		callbacks:   []setFn{EnableOrDisableAddon},
+	},
+	{
+		name:      "amd-gpu-device-plugin",
+		set:       SetBool,
+		callbacks: []setFn{EnableOrDisableAddon},
 	},
 	{
 		name:      "olm",
@@ -162,11 +169,6 @@ var Addons = []*Addon{
 		name:      "storage-provisioner",
 		set:       SetBool,
 		callbacks: []setFn{EnableOrDisableAddon},
-	},
-	{
-		name:      "storage-provisioner-gluster",
-		set:       SetBool,
-		callbacks: []setFn{enableOrDisableStorageClasses},
 	},
 	{
 		name:      "storage-provisioner-rancher",

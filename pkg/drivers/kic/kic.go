@@ -27,13 +27,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/ssh"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine/drivers"
+	"k8s.io/minikube/pkg/libmachine/ssh"
+	"k8s.io/minikube/pkg/libmachine/state"
 
-	pkgdrivers "k8s.io/minikube/pkg/drivers"
+	"k8s.io/minikube/pkg/drivers/common"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/command"
@@ -52,7 +52,7 @@ import (
 // Driver represents a kic driver https://minikube.sigs.k8s.io/docs/reference/drivers/docker
 type Driver struct {
 	*drivers.BaseDriver
-	*pkgdrivers.CommonDriver
+	*common.CommonDriver
 	URL        string
 	exec       command.Runner
 	NodeConfig Config
@@ -456,20 +456,20 @@ func (d *Driver) Stop() error {
 		}
 	}
 
-	runtime, err := cruntime.New(cruntime.Config{Type: d.NodeConfig.ContainerRuntime, Runner: d.exec})
+	crMgr, err := cruntime.New(cruntime.Config{Type: d.NodeConfig.ContainerRuntime, Runner: d.exec})
 	if err != nil { // won't return error because:
-		// even though we can't stop the cotainers inside, we still wanna stop the minikube container itself
+		// even though we can't stop the containers inside, we still wanna stop the minikube container itself
 		klog.Errorf("unable to get container runtime: %v", err)
 	} else {
-		containers, err := runtime.ListContainers(cruntime.ListContainersOptions{Namespaces: constants.DefaultNamespaces})
+		containers, err := crMgr.ListContainers(cruntime.ListContainersOptions{Namespaces: constants.DefaultNamespaces})
 		if err != nil {
 			klog.Infof("unable list containers : %v", err)
 		}
 		if len(containers) > 0 {
-			if err := runtime.StopContainers(containers); err != nil {
+			if err := crMgr.StopContainers(containers); err != nil {
 				klog.Infof("unable to stop containers : %v", err)
 			}
-			if err := runtime.KillContainers(containers); err != nil {
+			if err := crMgr.KillContainers(containers); err != nil {
 				klog.Errorf("unable to kill containers : %v", err)
 			}
 		}

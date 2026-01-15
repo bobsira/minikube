@@ -20,13 +20,13 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
-	"html/template"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/pkg/errors"
@@ -268,8 +268,8 @@ func (m *MemoryAsset) GetLength() int {
 }
 
 // SetLength returns length
-func (m *MemoryAsset) SetLength(len int) {
-	m.length = len
+func (m *MemoryAsset) SetLength(length int) {
+	m.length = length
 }
 
 // Read reads the asset
@@ -354,12 +354,12 @@ func defaultValue(defValue string, val interface{}) string {
 }
 
 func (m *BinAsset) loadData() error {
-	contents, err := m.FS.ReadFile(m.SourcePath)
+	contents, err := m.ReadFile(m.SourcePath)
 	if err != nil {
 		return err
 	}
 
-	if strings.HasSuffix(m.BaseAsset.SourcePath, ".tmpl") {
+	if strings.HasSuffix(m.SourcePath, ".tmpl") {
 		tpl, err := template.New(m.SourcePath).Funcs(template.FuncMap{"default": defaultValue}).Parse(string(contents))
 		if err != nil {
 			return err
@@ -403,8 +403,8 @@ func (m *BinAsset) GetLength() int {
 }
 
 // SetLength sets length
-func (m *BinAsset) SetLength(len int) {
-	m.length = len
+func (m *BinAsset) SetLength(length int) {
+	m.length = length
 }
 
 // Read reads the asset

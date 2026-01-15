@@ -271,9 +271,9 @@ func (r *CRIO) ListImages(ListImagesOptions) ([]ListImage, error) {
 }
 
 // LoadImage loads an image into this runtime
-func (r *CRIO) LoadImage(path string) error {
-	klog.Infof("Loading image: %s", path)
-	c := exec.Command("sudo", "podman", "load", "-i", path)
+func (r *CRIO) LoadImage(imgPath string) error {
+	klog.Infof("Loading image: %s", imgPath)
+	c := exec.Command("sudo", "podman", "load", "-i", imgPath)
 	if _, err := r.Runner.RunCmd(c); err != nil {
 		return errors.Wrap(err, "crio load image")
 	}
@@ -286,9 +286,9 @@ func (r *CRIO) PullImage(name string) error {
 }
 
 // SaveImage saves an image from this runtime
-func (r *CRIO) SaveImage(name string, path string) error {
-	klog.Infof("Saving image %s: %s", name, path)
-	c := exec.Command("sudo", "podman", "save", name, "-o", path)
+func (r *CRIO) SaveImage(name string, destPath string) error {
+	klog.Infof("Saving image %s: %s", name, destPath)
+	c := exec.Command("sudo", "podman", "save", name, "-o", destPath)
 	if _, err := r.Runner.RunCmd(c); err != nil {
 		return errors.Wrap(err, "crio save image")
 	}
@@ -297,7 +297,7 @@ func (r *CRIO) SaveImage(name string, path string) error {
 
 // RemoveImage removes a image
 func (r *CRIO) RemoveImage(name string) error {
-	return removeCRIImage(r.Runner, name)
+	return removeCRIImage(r.Runner, name, true)
 }
 
 // TagImage tags an image in this runtime
@@ -406,13 +406,13 @@ func (r *CRIO) StopContainers(ids []string) error {
 }
 
 // ContainerLogCmd returns the command to retrieve the log for a container based on ID
-func (r *CRIO) ContainerLogCmd(id string, len int, follow bool) string {
-	return criContainerLogCmd(r.Runner, id, len, follow)
+func (r *CRIO) ContainerLogCmd(id string, length int, follow bool) string {
+	return criContainerLogCmd(r.Runner, id, length, follow)
 }
 
 // SystemLogCmd returns the command to retrieve system logs
-func (r *CRIO) SystemLogCmd(len int) string {
-	return fmt.Sprintf("sudo journalctl -u crio -n %d", len)
+func (r *CRIO) SystemLogCmd(length int) string {
+	return fmt.Sprintf("sudo journalctl -u crio -n %d", length)
 }
 
 // Preload preloads the container runtime with k8s images
@@ -425,13 +425,47 @@ func (r *CRIO) Preload(cc config.ClusterConfig) error {
 	cRuntime := cc.KubernetesConfig.ContainerRuntime
 
 	// If images already exist, return
-	images, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
+	imgs, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
 	if err != nil {
 		return errors.Wrap(err, "getting images")
 	}
-	if crioImagesPreloaded(r.Runner, images) {
+	if crioImagesPreloaded(r.Runner, imgs) {
 		klog.Info("Images already preloaded, skipping extraction")
 		return nil
+	}
+
+	// Double check if there are any images in the runtime to avoid data loss on restart
+	// The crio preload tarball is a filesystem dump that overwrites /var
+	// we backup and restore any existing images
+	// simmilar to  docker runtime implemented in pkg/minikube/cruntime/docker.go.
+	// It uses a special helper (pkg/minikube/docker/store.go) to explicitly save and merge the repositories.json file (Docker's image index)
+	// before and after the tarball extraction.
+	allImages, err := r.ListImages(ListImagesOptions{})
+	if err != nil {
+		klog.Warningf("failed to list images: %v", err)
+	}
+
+	var backupDir string
+	if len(allImages) > 0 {
+		klog.Infof("Found %d existing images, backing up...", len(allImages))
+		if rr, err := r.Runner.RunCmd(exec.Command("mktemp", "-d")); err == nil {
+			backupDir = strings.TrimSpace(rr.Stdout.String())
+		} else {
+			klog.Errorf("failed to create backup dir: %v. Skipping preload.", err)
+			return nil
+		}
+
+		for _, img := range allImages {
+			name := img.ID
+			if len(img.RepoTags) > 0 {
+				name = img.RepoTags[0]
+			}
+			// Use ID as filename to avoid slash issues in tag names
+			dst := path.Join(backupDir, strings.ReplaceAll(img.ID, ":", "-")+".tar")
+			if err := r.SaveImage(name, dst); err != nil {
+				klog.Warningf("failed to save image %s: %v", name, err)
+			}
+		}
 	}
 
 	tarballPath := download.TarballPath(k8sVersion, cRuntime)
@@ -473,11 +507,24 @@ func (r *CRIO) Preload(cc config.ClusterConfig) error {
 		klog.Infof("error removing tarball: %v", err)
 	}
 
+	if backupDir != "" {
+		klog.Info("Restoring backed up images...")
+		for _, img := range allImages {
+			dst := path.Join(backupDir, strings.ReplaceAll(img.ID, ":", "-")+".tar")
+			if err := r.LoadImage(dst); err != nil {
+				klog.Warningf("failed to restore image %s: %v", img.ID, err)
+			}
+		}
+		if _, err := r.Runner.RunCmd(exec.Command("rm", "-rf", backupDir)); err != nil {
+			klog.Warningf("failed to remove backup dir: %v", err)
+		}
+	}
+
 	return nil
 }
 
 // crioImagesPreloaded returns true if all images have been preloaded
-func crioImagesPreloaded(runner command.Runner, images []string) bool {
+func crioImagesPreloaded(runner command.Runner, imgs []string) bool {
 	rr, err := runner.RunCmd(exec.Command("sudo", "crictl", "images", "--output", "json"))
 	if err != nil {
 		return false
@@ -491,7 +538,7 @@ func crioImagesPreloaded(runner command.Runner, images []string) bool {
 	}
 
 	// Make sure images == imgs
-	for _, i := range images {
+	for _, i := range imgs {
 		found := false
 		for _, ji := range jsonImages.Images {
 			for _, rt := range ji.RepoTags {
@@ -516,6 +563,6 @@ func crioImagesPreloaded(runner command.Runner, images []string) bool {
 }
 
 // ImagesPreloaded returns true if all images have been preloaded
-func (r *CRIO) ImagesPreloaded(images []string) bool {
-	return crioImagesPreloaded(r.Runner, images)
+func (r *CRIO) ImagesPreloaded(imgs []string) bool {
+	return crioImagesPreloaded(r.Runner, imgs)
 }

@@ -33,7 +33,7 @@ Here we see the available nodes (1 in our case). Kubernetes will choose where to
 Let's deploy our first app on Kubernetes with the `kubectl create deployment` command. We need to provide the deployment name and app image location (include the full repository url for images hosted outside Docker Hub).
 
 ```shell
-kubectl create deployment kubernetes-bootcamp --image=gcr.io/k8s-minikube/kubernetes-bootcamp:v1
+kubectl create deployment kubernetes-bootcamp --image=registry.k8s.io/minikube/kubernetes-bootcamp:v1
 ```
 
 Great! You just deployed your first application by creating a deployment. This performed a few things for you:
@@ -56,7 +56,7 @@ Pods that are running inside Kubernetes are running on a private, isolated netwo
 
 We will cover other options on how to expose your application outside the Kubernetes cluster in Module 4.
 
-The `kubectl` command can create a proxy that will forward communications into the cluster-wide, private network. The proxy can be terminiated by pressing control-C and won't show any output while its running.
+The `kubectl` command can create a proxy that will forward communications into the cluster-wide, private network. The proxy can be terminated by pressing control-C and won't show any output while its running.
 
 We will open a second terminal window to run the proxy.
 

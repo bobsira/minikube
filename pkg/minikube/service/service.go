@@ -28,8 +28,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/pkg/errors"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +37,7 @@ import (
 	typed_core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/kapi"
+	"k8s.io/minikube/pkg/libmachine"
 	"k8s.io/minikube/pkg/minikube/machine"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/style"
@@ -66,8 +67,8 @@ func init() {
 }
 
 // GetCoreClient returns a core client
-func (k *K8sClientGetter) GetCoreClient(context string) (typed_core.CoreV1Interface, error) {
-	client, err := kapi.Client(context)
+func (k *K8sClientGetter) GetCoreClient(ctx string) (typed_core.CoreV1Interface, error) {
+	client, err := kapi.Client(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "client")
 	}
@@ -235,11 +236,16 @@ func OptionallyHTTPSFormattedURLString(bareURLString string, https bool) (string
 // "Namespace", "Name" and "URL" columns to a writer
 func PrintServiceList(writer io.Writer, data [][]string) {
 	table := tablewriter.NewWriter(writer)
-	table.SetHeader([]string{"Namespace", "Name", "Target Port", "URL"})
-	table.SetBorders(tablewriter.Border{Left: true, Top: true, Right: true, Bottom: true})
-	table.SetCenterSeparator("|")
-	table.AppendBulk(data)
-	table.Render()
+	table.Header("Namespace", "Name", "Target Port", "URL")
+	table.Options(
+		tablewriter.WithHeaderAutoFormat(tw.On),
+	)
+	if err := table.Bulk(data); err != nil {
+		klog.Error("Error while printing service list: ", err)
+	}
+	if err := table.Render(); err != nil {
+		klog.Error("Error rendering service list table: ", err)
+	}
 }
 
 // SVCNotFoundError error type handles 'service not found' scenarios
@@ -288,8 +294,8 @@ func WaitForService(api libmachine.API, cname string, namespace string, service 
 	}
 
 	for _, bareURLString := range serviceURL.URLs {
-		url, _ := OptionallyHTTPSFormattedURLString(bareURLString, https)
-		urlList = append(urlList, url)
+		urlString, _ := OptionallyHTTPSFormattedURLString(bareURLString, https)
+		urlList = append(urlList, urlString)
 	}
 	return urlList, nil
 }
@@ -314,7 +320,7 @@ func getServiceListFromServicesByLabel(services typed_core.ServiceInterface, key
 }
 
 // CreateSecret creates or modifies secrets
-func CreateSecret(cname string, namespace, name string, dataValues map[string]string, labels map[string]string) error {
+func CreateSecret(cname string, namespace, name string, dataValues map[string]string, labelData map[string]string) error {
 	client, err := K8s.GetCoreClient(cname)
 	if err != nil {
 		return &retry.RetriableError{Err: err}
@@ -344,7 +350,7 @@ func CreateSecret(cname string, namespace, name string, dataValues map[string]st
 	secretObj := &core.Secret{
 		ObjectMeta: meta.ObjectMeta{
 			Name:   name,
-			Labels: labels,
+			Labels: labelData,
 		},
 		Data: data,
 		Type: core.SecretTypeOpaque,

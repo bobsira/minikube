@@ -259,6 +259,12 @@ minikube failed to locate specified driver
 "DRV_NOT_DETECTED" (Exit code ExDriverNotFound)  
 minikube could not find a valid driver  
 
+"DRV_AUX_NOT_FOUND" (Exit code ExDriverNotFound)  
+aux drivers (hyperkit) were not found  
+
+"DRV_AUX_NOT_HEALTHY" (Exit code ExDriverError)  
+aux drivers (hyperkit) were found but not healthy  
+
 "DRV_NOT_HEALTHY" (Exit code ExDriverNotFound)  
 minikube found drivers but none were ready to use  
 
@@ -488,6 +494,10 @@ minikube was unable to safely downgrade installed Kubernetes version
 "NOT_FOUND_CNI_PLUGINS" (Exit code ExProgramNotFound)  
 
 "NOT_FOUND_SOCKET_VMNET" (Exit code ExProgramNotFound)  
+
+"NOT_FOUND_VMNET_HELPER" (Exit code ExProgramNotFound)  
+
+"NOT_CONFIGURED_VMNET_HELPER" (Exit code ExProgramConfig)  
 
 ## Error Codes
 

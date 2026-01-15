@@ -26,17 +26,18 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine/drivers"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
+	"k8s.io/minikube/pkg/libmachine/drivers"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/localpath"
 	"k8s.io/minikube/pkg/minikube/registry"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 const (
@@ -49,7 +50,7 @@ func init() {
 	if err := registry.Register(registry.DriverDef{
 		Name:     driver.Docker,
 		Config:   configure,
-		Init:     func() drivers.Driver { return kic.NewDriver(kic.Config{OCIBinary: oci.Docker}) },
+		Init:     func(_ *run.CommandOptions) drivers.Driver { return kic.NewDriver(kic.Config{OCIBinary: oci.Docker}) },
 		Status:   status,
 		Default:  true,
 		Priority: registry.HighlyPreferred,
@@ -95,7 +96,7 @@ func configure(cc config.ClusterConfig, n config.Node) (interface{}, error) {
 	}), nil
 }
 
-func status() (retState registry.State) {
+func status(_ *run.CommandOptions) (retState registry.State) {
 	version, state := dockerVersionOrState()
 	if state.Error != nil {
 		return state
@@ -289,6 +290,17 @@ func checkDockerDesktopVersion(version string) (s registry.State) {
 			Fix:       "Update Docker Desktop to 4.16.1 or greater",
 		}
 	}
+
+	if runtime.GOOS == "darwin" && currSemver.EQ(semver.MustParse("4.34.0")) {
+		return registry.State{
+			Reason:    "PROVIDER_DOCKER_DESKTOP_VERSION_BAD",
+			Running:   true,
+			Error:     errors.New("Docker Desktop 4.34.0 has a regression that prevents minikube from listing the containers"),
+			Installed: true,
+			Fix:       "Use a different Docker desktop version, more info at https://github.com/docker/cli/issues/5412",
+		}
+	}
+
 	return s
 }
 

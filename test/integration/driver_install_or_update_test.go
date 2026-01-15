@@ -31,74 +31,6 @@ import (
 	"k8s.io/minikube/pkg/version"
 )
 
-// TestKVMDriverInstallOrUpdate makes sure our docker-machine-driver-kvm2 binary can be installed properly
-func TestKVMDriverInstallOrUpdate(t *testing.T) {
-	if NoneDriver() {
-		t.Skip("Skip none driver.")
-	}
-
-	if runtime.GOOS != "linux" {
-		t.Skip("Skip if not linux.")
-	}
-
-	if arm64Platform() {
-		t.Skip("Skip if arm64. See https://github.com/kubernetes/minikube/issues/10144")
-	}
-
-	MaybeParallel(t)
-
-	tests := []struct {
-		name string
-		path string
-	}{
-		{name: "driver-without-version-support", path: filepath.Join(*testdataDir, "kvm2-driver-without-version")},
-		{name: "driver-with-older-version", path: filepath.Join(*testdataDir, "kvm2-driver-older-version")},
-	}
-
-	originalPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", originalPath)
-
-	for _, tc := range tests {
-		dir := t.TempDir()
-
-		pwd, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("Error not expected when getting working directory. test: %s, got: %v", tc.name, err)
-		}
-
-		path := filepath.Join(pwd, tc.path)
-
-		_, err = os.Stat(filepath.Join(path, "docker-machine-driver-kvm2"))
-		if err != nil {
-			t.Fatalf("Expected driver to exist. test: %s, got: %v", tc.name, err)
-		}
-
-		// change permission to allow driver to be executable
-		err = os.Chmod(filepath.Join(path, "docker-machine-driver-kvm2"), 0700)
-		if err != nil {
-			t.Fatalf("Expected not expected when changing driver permission. test: %s, got: %v", tc.name, err)
-		}
-
-		os.Setenv("PATH", fmt.Sprintf("%s:%s", path, originalPath))
-
-		// NOTE: This should be a real version, as it impacts the downloaded URL
-		newerVersion, err := semver.Make("1.3.0")
-		if err != nil {
-			t.Fatalf("Expected new semver. test: %v, got: %v", tc.name, err)
-		}
-
-		err = auxdriver.InstallOrUpdate("kvm2", dir, newerVersion, true, true)
-		if err != nil {
-			t.Fatalf("Failed to update driver to %v. test: %s, got: %v", newerVersion, tc.name, err)
-		}
-
-		_, err = os.Stat(filepath.Join(dir, "docker-machine-driver-kvm2"))
-		if err != nil {
-			t.Fatalf("Expected driver to be download. test: %s, got: %v", tc.name, err)
-		}
-	}
-}
-
 // TestHyperKitDriverInstallOrUpdate makes sure our docker-machine-driver-hyperkit binary can be installed properly
 func TestHyperKitDriverInstallOrUpdate(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -151,7 +83,7 @@ func TestHyperKitDriverInstallOrUpdate(t *testing.T) {
 			t.Skipf("password required to execute 'sudo', skipping remaining test")
 		}
 
-		err = auxdriver.InstallOrUpdate("hyperkit", dir, newerVersion, false, true)
+		err = auxdriver.InstallOrUpdate("hyperkit", dir, false, true)
 		if err != nil {
 			t.Fatalf("Failed to update driver to %v. test: %s, got: %v", newerVersion, tc.name, err)
 		}

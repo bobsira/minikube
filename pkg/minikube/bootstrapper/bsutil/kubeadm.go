@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"fmt"
 	"path"
+	"slices"
 
 	"github.com/blang/semver/v4"
 	"github.com/pkg/errors"
@@ -107,6 +108,13 @@ func GenerateKubeadmYAML(cc config.ClusterConfig, n config.Node, r cruntime.Mana
 		kubeletConfigOpts["runtimeRequestTimeout"] = "15m"
 	}
 
+	// Disable cgroup v2 requirement for k8s 1.35+ if using cgroupfs
+	// TODO: remove this when minikube supports cgroup v2 for containerd and cri-o #22318
+	if version.GTE(semver.MustParse("1.35.0-alpha.0")) && cgroupDriver != constants.SystemdCgroupDriver {
+		// https://github.com/kubernetes/kubernetes/blob/15673d04e30c711a7bb0f0efe6abf4baead1463b/staging/src/k8s.io/kubelet/config/v1beta1/types.go#L923
+		kubeletConfigOpts["failCgroupV1"] = "false"
+	}
+
 	opts := struct {
 		CertDir                    string
 		ServiceCIDR                string
@@ -172,7 +180,15 @@ func GenerateKubeadmYAML(cc config.ClusterConfig, n config.Node, r cruntime.Mana
 	if version.GTE(semver.MustParse("1.23.0")) {
 		configTmpl = ktmpl.V1Beta3
 	}
-	// TODO: support v1beta4 kubeadm config when released - refs: https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/ and https://github.com/kubernetes/kubeadm/issues/2890
+	// v1beta4 isn't required until v1.31.
+	if version.GTE(semver.MustParse("1.31.0")) {
+		// Support v1beta4 kubeadm config
+		// refs:
+		// - https://kubernetes.io/blog/2024/08/23/kubernetes-1-31-kubeadm-v1beta4/
+		// - https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/
+		// - https://github.com/kubernetes/kubeadm/issues/2890
+		configTmpl = ktmpl.V1Beta4
+	}
 
 	if version.GTE(semver.MustParse("1.24.0-alpha.2")) {
 		opts.PrependCriSocketUnix = true
@@ -212,9 +228,12 @@ var KubeadmExtraConfigOpts = []string{
 	Kubeproxy,
 }
 
-// InvokeKubeadm returns the invocation command for Kubeadm
-func InvokeKubeadm(version string) string {
-	return fmt.Sprintf("sudo env PATH=\"%s:$PATH\" kubeadm", binRoot(version))
+// KubeadmCmdWithPath returns the invocation command for Kubeadm
+// NOTE: The command must run with the a root shell to expand PATH to the
+// root PATH. On Debian 12 user PATH does not contain /usr/sbin which breaks
+// kubeadm since https://github.com/kubernetes/kubernetes/pull/129450.
+func KubeadmCmdWithPath(version string) string {
+	return fmt.Sprintf("env PATH=\"%s:$PATH\" kubeadm", binRoot(version))
 }
 
 // EtcdDataDir is where etcd data is stored.
@@ -250,7 +269,7 @@ func kubeletConfigOpts(extraOpts config.ExtraOptionSlice) map[string]string {
 		if eo.Component != Kubelet {
 			continue
 		}
-		if config.ContainsParam(kubeletConfigParams, eo.Key) {
+		if slices.Contains(kubeletConfigParams, eo.Key) {
 			args[eo.Key] = eo.Value
 		}
 	}

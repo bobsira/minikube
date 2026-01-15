@@ -36,7 +36,14 @@ source ./hack/jenkins/installers/check_install_linux_crons.sh
 
 # Make sure all required packages are installed
 sudo apt-get update
-sudo apt-get -y install build-essential unzip rsync bc python3 p7zip-full
+sudo apt-get -y install build-essential unzip rsync bc python3 p7zip-full cmake
+
+# Log Cmake version
+CMAKE_VERSION=$(cmake --version | head -n1 | awk '{print $3}')
+echo "Start of ISO build: CMake version: $CMAKE_VERSION"
+if dpkg --compare-versions "$CMAKE_VERSION" lt "3.20"; then
+	echo "WARNING: CMake version $CMAKE_VERSION is less than 3.20. this will cause a slower build due to rebuidling cmake ..."
+fi
 
 # Let's make sure we have the newest ISO reference
 curl -L https://github.com/kubernetes/minikube/raw/master/Makefile --output Makefile-head
@@ -65,16 +72,21 @@ else
 	export ISO_BUCKET
 fi
 
-make release-iso | tee iso-logs.txt
-# Abort with error message if above command failed
-ec=$?
-if [ $ec -gt 0 ]; then
-	if [ "$release" = false ]; then
-		gh pr comment ${ghprbPullId} --body "Hi ${ghprbPullAuthorLoginMention}, building a new ISO failed.
-		See the logs at: https://storage.cloud.google.com/minikube-builds/logs/${ghprbPullId}/${ghprbActualCommit::7}/iso_build.txt
-		"
-	fi
-	exit $ec
+if ! make release-iso 2>&1 | tee iso-logs.txt; then
+    # Exit of `make` (PIPESTATUS[0]); fallback to 1 if unavailable
+    ec=${PIPESTATUS[0]:-1}
+
+    # Only comment on non-release; default release=false if unset
+    if [[ ${release:-false} != "true" ]]; then
+        body=$(cat << EOF
+Hi ${ghprbPullAuthorLoginMention}, building a new ISO failed for Commit ${ghprbActualCommit}
+See the logs at:
+https://storage.cloud.google.com/minikube-builds/logs/${ghprbPullId}/${ghprbActualCommit::7}/iso_build.txt
+EOF
+)
+	    gh pr comment "${ghprbPullId}" --body "$body"
+    fi
+    exit "$ec"
 fi
 
 git config user.name "minikube-bot"

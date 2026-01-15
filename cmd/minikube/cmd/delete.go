@@ -26,17 +26,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/machine/libmachine/mcnerror"
 	"github.com/mitchellh/go-ps"
 	"github.com/pkg/errors"
+	"k8s.io/minikube/pkg/libmachine/mcnerror"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"k8s.io/klog/v2"
 	cmdcfg "k8s.io/minikube/cmd/minikube/cmd/config"
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/drivers/kic"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
+	"k8s.io/minikube/pkg/libmachine"
 	"k8s.io/minikube/pkg/minikube/cluster"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
@@ -51,6 +52,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/out/register"
 	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/sshagent"
 	"k8s.io/minikube/pkg/minikube/style"
 )
@@ -86,8 +88,8 @@ type DeletionError struct {
 	Errtype typeOfError
 }
 
-func (error DeletionError) Error() string {
-	return error.Err.Error()
+func (deletionError DeletionError) Error() string {
+	return deletionError.Err.Error()
 }
 
 var hostAndDirsDeleter = func(api libmachine.API, cc *config.ClusterConfig, profileName string) error {
@@ -211,6 +213,8 @@ func runDelete(_ *cobra.Command, args []string) {
 	if len(args) > 0 {
 		exit.Message(reason.Usage, "Usage: minikube delete")
 	}
+
+	options := flags.CommandOptions()
 	out.SetJSON(outputFormat == "json")
 	register.Reg.SetStep(register.Deleting)
 	download.CleanUpOlderPreloads()
@@ -236,7 +240,7 @@ func runDelete(_ *cobra.Command, args []string) {
 		deleteContainersAndVolumes(delCtx, oci.Docker)
 		deleteContainersAndVolumes(delCtx, oci.Podman)
 
-		errs := DeleteProfiles(profilesToDelete)
+		errs := DeleteProfiles(profilesToDelete, options)
 		register.Reg.SetStep(register.Done)
 
 		if len(errs) > 0 {
@@ -258,7 +262,7 @@ func runDelete(_ *cobra.Command, args []string) {
 			orphan = true
 		}
 
-		errs := DeleteProfiles([]*config.Profile{profile})
+		errs := DeleteProfiles([]*config.Profile{profile}, options)
 		register.Reg.SetStep(register.Done)
 
 		if len(errs) > 0 {
@@ -297,22 +301,22 @@ func purgeMinikubeDirectory() {
 }
 
 // DeleteProfiles deletes one or more profiles
-func DeleteProfiles(profiles []*config.Profile) []error {
+func DeleteProfiles(profiles []*config.Profile, options *run.CommandOptions) []error {
 	klog.Infof("DeleteProfiles")
 	var errs []error
 	for _, profile := range profiles {
-		errs = append(errs, deleteProfileTimeout(profile)...)
+		errs = append(errs, deleteProfileTimeout(profile, options)...)
 	}
 	return errs
 }
 
-func deleteProfileTimeout(profile *config.Profile) []error {
+func deleteProfileTimeout(profile *config.Profile, options *run.CommandOptions) []error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if err := deleteProfile(ctx, profile); err != nil {
+	if err := deleteProfile(ctx, profile, options); err != nil {
 
-		mm, loadErr := machine.LoadMachine(profile.Name)
+		mm, loadErr := machine.LoadMachine(profile.Name, options)
 		if !profile.IsValid() || (loadErr != nil || !mm.IsValid()) {
 			invalidProfileDeletionErrs := deleteInvalidProfile(profile)
 			if len(invalidProfileDeletionErrs) > 0 {
@@ -325,7 +329,7 @@ func deleteProfileTimeout(profile *config.Profile) []error {
 	return nil
 }
 
-func deleteProfile(ctx context.Context, profile *config.Profile) error {
+func deleteProfile(ctx context.Context, profile *config.Profile, options *run.CommandOptions) error {
 	klog.Infof("Deleting %s", profile.Name)
 	register.Reg.SetStep(register.Deleting)
 
@@ -335,7 +339,7 @@ func deleteProfile(ctx context.Context, profile *config.Profile) error {
 
 		// if driver is oci driver, delete containers and volumes
 		if driver.IsKIC(profile.Config.Driver) {
-			if err := unpauseIfNeeded(profile); err != nil {
+			if err := unpauseIfNeeded(profile, options); err != nil {
 				klog.Warningf("failed to unpause %s : %v", profile.Name, err)
 			}
 			out.Styled(style.DeletingHost, `Deleting "{{.profile_name}}" in {{.driver_name}} ...`, out.V{"profile_name": profile.Name, "driver_name": profile.Config.Driver})
@@ -348,7 +352,7 @@ func deleteProfile(ctx context.Context, profile *config.Profile) error {
 		klog.Infof("%s has no configuration, will try to make it work anyways", profile.Name)
 	}
 
-	api, err := machine.NewAPIClient()
+	api, err := machine.NewAPIClient(options)
 	if err != nil {
 		delErr := profileDeletionErr(profile.Name, fmt.Sprintf("error getting client %v", err))
 		return DeletionError{Err: delErr, Errtype: Fatal}
@@ -381,7 +385,7 @@ func deleteProfile(ctx context.Context, profile *config.Profile) error {
 	return nil
 }
 
-func unpauseIfNeeded(profile *config.Profile) error {
+func unpauseIfNeeded(profile *config.Profile, options *run.CommandOptions) error {
 	// there is a known issue with removing kicbase container with paused containerd/crio containers inside
 	// unpause it before we delete it
 	crName := profile.Config.KubernetesConfig.ContainerRuntime
@@ -389,7 +393,7 @@ func unpauseIfNeeded(profile *config.Profile) error {
 		return nil
 	}
 
-	api, err := machine.NewAPIClient()
+	api, err := machine.NewAPIClient(options)
 	if err != nil {
 		return err
 	}
@@ -527,11 +531,11 @@ func uninstallKubernetes(api libmachine.API, cc config.ClusterConfig, n config.N
 }
 
 // HandleDeletionErrors handles deletion errors from DeleteProfiles
-func HandleDeletionErrors(errors []error) {
-	if len(errors) == 1 {
-		handleSingleDeletionError(errors[0])
+func HandleDeletionErrors(errs []error) {
+	if len(errs) == 1 {
+		handleSingleDeletionError(errs[0])
 	} else {
-		handleMultipleDeletionErrors(errors)
+		handleMultipleDeletionErrors(errs)
 	}
 }
 
@@ -556,10 +560,10 @@ func handleSingleDeletionError(err error) {
 	}
 }
 
-func handleMultipleDeletionErrors(errors []error) {
+func handleMultipleDeletionErrors(errs []error) {
 	out.ErrT(style.Sad, "Multiple errors deleting profiles")
 
-	for _, err := range errors {
+	for _, err := range errs {
 		deletionError, ok := err.(DeletionError)
 
 		if ok {
@@ -642,12 +646,12 @@ func killProcess(path string) error {
 		// if multiple errors were encountered, combine them into a single error
 		out.Styled(style.Failure, "Multiple errors encountered:")
 		for _, e := range errs {
-			out.Err("%v\n", e)
+			out.Errf("%v\n", e)
 		}
 		return errors.New("multiple errors encountered while closing mount processes")
 	}
 
-	// if no errors were encoutered, it's safe to delete pidFile
+	// if no errors were encountered, it's safe to delete pidFile
 	if err := os.Remove(pidPath); err != nil {
 		return errors.Wrap(err, "while closing mount-pids file")
 	}
@@ -706,14 +710,14 @@ var isMinikubeProcess = func(pid int) (bool, error) {
 // getPids opens the file at PATH and tries to read
 // one or more space separated pids
 func getPids(path string) ([]int, error) {
-	out, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.Wrap(err, "ReadFile")
 	}
-	klog.Infof("pidfile contents: %s", out)
+	klog.Infof("pidfile contents: %s", data)
 
 	pids := []int{}
-	strPids := strings.Fields(string(out))
+	strPids := strings.Fields(string(data))
 	for _, p := range strPids {
 		intPid, err := strconv.Atoi(p)
 		if err != nil {

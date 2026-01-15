@@ -19,12 +19,14 @@ package image
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -71,9 +73,11 @@ func DigestByDockerLib(imgClient *client.Client, imgName string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	imgClient.NegotiateAPIVersion(ctx)
-	img, _, err := imgClient.ImageInspectWithRaw(ctx, imgName)
-	if err != nil && !client.IsErrNotFound(err) {
-		klog.Infof("couldn't find image digest %s from local daemon: %v ", imgName, err)
+	img, err := imgClient.ImageInspect(ctx, imgName)
+	if err != nil {
+		if !cerrdefs.IsNotFound(err) {
+			klog.Infof("couldn't find image digest %s from local daemon: %v ", imgName, err)
+		}
 		return ""
 	}
 	return img.ID
@@ -207,7 +211,20 @@ func UploadCachedImage(imgName string) error {
 		klog.Infof("error parsing image name %s tag %v ", imgName, err)
 		return err
 	}
-	return uploadImage(tag, imagePathInCache(imgName))
+	if err := uploadImage(tag, imagePathInCache(imgName)); err != nil {
+		manifest, err := loadManifestWithRetry(imagePathInCache(imgName))
+		if err != nil || len(manifest) == 0 || len(manifest[0].RepoTags) == 0 {
+			return fmt.Errorf("failed to determine the image tag from tarball, err: %v", err)
+		}
+
+		tag, err = name.NewTag(manifest[0].RepoTags[0], name.WeakValidation)
+		if err != nil {
+			klog.Infof("error parsing image name: %s ", err.Error())
+			return err
+		}
+		return uploadImage(tag, imagePathInCache(imgName))
+	}
+	return nil
 }
 
 func uploadImage(tag name.Tag, p string) error {
@@ -218,9 +235,9 @@ func uploadImage(tag name.Tag, p string) error {
 		return fmt.Errorf("neither daemon nor remote")
 	}
 
-	img, err = tarball.ImageFromPath(p, &tag)
+	img, err = imageFromPathWithRetry(p, tag)
 	if err != nil {
-		return errors.Wrap(err, "tarball")
+		return err
 	}
 	ref := name.Reference(tag)
 
@@ -248,6 +265,52 @@ func uploadRemote(ref name.Reference, img v1.Image, p v1.Platform) error {
 		klog.Warningf("remote push for %s: %v", ref, err)
 	}
 	return err
+}
+
+func imageFromPathWithRetry(path string, tag name.Tag) (v1.Image, error) {
+	var lastErr error
+	const maxAttempts = 3
+	for i := 0; i < maxAttempts; i++ {
+		if i > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		img, err := tarball.ImageFromPath(path, &tag)
+		if err == nil {
+			return img, nil
+		}
+		lastErr = errors.Wrap(err, "tarball")
+		if !isRetryableEOF(err) {
+			return nil, lastErr
+		}
+		klog.Infof("retrying tarball read for %s due to EOF (%d/%d)", path, i+1, maxAttempts)
+	}
+	return nil, lastErr
+}
+
+func loadManifestWithRetry(path string) (tarball.Manifest, error) {
+	var lastErr error
+	const maxAttempts = 3
+	for i := 0; i < maxAttempts; i++ {
+		if i > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		manifest, err := tarball.LoadManifest(func() (io.ReadCloser, error) {
+			return os.Open(path)
+		})
+		if err == nil {
+			return manifest, nil
+		}
+		lastErr = err
+		if !isRetryableEOF(err) {
+			return nil, lastErr
+		}
+		klog.Infof("retrying manifest read for %s due to EOF (%d/%d)", path, i+1, maxAttempts)
+	}
+	return nil, lastErr
+}
+
+func isRetryableEOF(err error) bool {
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected EOF")
 }
 
 // See https://github.com/kubernetes/minikube/issues/10402
@@ -322,6 +385,6 @@ func normalizeTagName(image string) string {
 
 // Remove docker.io prefix since it won't be included in image names
 // when we call `docker images`.
-func TrimDockerIO(name string) string {
-	return strings.TrimPrefix(name, "docker.io/")
+func TrimDockerIO(imageName string) string {
+	return strings.TrimPrefix(imageName, "docker.io/")
 }

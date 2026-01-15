@@ -3,12 +3,12 @@
 reviewers:
   - medyagh
   - prezha
-  - spowelljr
   - comradeprogrammer
+  - nirs
 approvers:
   - medyagh
-  - spowelljr
   - prezha
+  - comradeprogrammer
 emeritus_approvers:
   - dlorenc
   - luxas
@@ -20,3 +20,4 @@ emeritus_approvers:
   - tstromberg
   - sharifelgamal
   - afbjorklund
+  - spowelljr

@@ -25,11 +25,15 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/blang/semver/v4"
+
 	"github.com/pkg/errors"
+
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/command"
+	"k8s.io/minikube/pkg/util/retry"
 )
 
 // container maps to 'runc list -f json'
@@ -49,12 +53,15 @@ type crictlImages struct {
 	} `json:"images"`
 }
 
+// timeoutOverride flag overrides the default 2s timeout for crictl commands
+const timeoutOverrideFlag = "--timeout=10s"
+
 // crictlList returns the output of 'crictl ps' in an efficient manner
 func crictlList(cr CommandRunner, root string, o ListContainersOptions) (*command.RunResult, error) {
 	klog.Infof("listing CRI containers in root %s: %+v", root, o)
 
 	// Use -a because otherwise paused containers are missed
-	baseCmd := []string{"crictl", "ps", "-a", "--quiet"}
+	baseCmd := []string{"crictl", timeoutOverrideFlag, "ps", "-a", "--quiet"}
 
 	if o.Name != "" {
 		baseCmd = append(baseCmd, fmt.Sprintf("--name=%s", o.Name))
@@ -184,7 +191,7 @@ func unpauseCRIContainers(cr CommandRunner, root string, ids []string) error {
 	return nil
 }
 
-// criCRIContainers kills a list of containers using crictl
+// killCRIContainers kills a list of containers using crictl
 func killCRIContainers(cr CommandRunner, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -214,14 +221,47 @@ func pullCRIImage(cr CommandRunner, name string) error {
 }
 
 // removeCRIImage remove image using crictl
-func removeCRIImage(cr CommandRunner, name string) error {
+// verifyRemoval only used for CRIO due to #22242
+func removeCRIImage(cr CommandRunner, name string, verifyRemoval bool) error {
 	klog.Infof("Removing image: %s", name)
 
 	crictl := getCrictlPath(cr)
 	args := append([]string{crictl, "rmi"}, name)
 	c := exec.Command("sudo", args...)
-	if _, err := cr.RunCmd(c); err != nil {
+	var err error
+	success := false
+	if _, err = cr.RunCmd(c); err == nil {
+		success = true
+	} else if _, err := cr.RunCmd(exec.Command("sudo", crictl, "rmi", AddDockerIO(name))); err == nil {
+		// see https://github.com/containers/podman/issues/15974
+		success = true
+	} else if _, err := cr.RunCmd(exec.Command("sudo", crictl, "rmi", AddLocalhostPrefix(name))); err == nil {
+		success = true
+	}
+
+	if !success {
 		return errors.Wrap(err, "crictl")
+	}
+
+	if !verifyRemoval {
+		return nil
+	}
+
+	// Verify that the image is removed
+	checkFunc := func() error {
+		c := exec.Command("sudo", crictl, "images", "--quiet", name)
+		rr, err := cr.RunCmd(c)
+		if err != nil {
+			return err
+		}
+		if len(strings.TrimSpace(rr.Stdout.String())) > 0 {
+			return fmt.Errorf("image %s still exists", name)
+		}
+		return nil
+	}
+
+	if err := retry.Expo(checkFunc, 250*time.Millisecond, 10*time.Second); err != nil {
+		return errors.Wrapf(err, "image %s still exists after removal", name)
 	}
 	return nil
 }
@@ -268,7 +308,7 @@ func populateCRIConfig(cr CommandRunner, socket string) error {
 
 // getCRIInfo returns current information
 func getCRIInfo(cr CommandRunner) (map[string]interface{}, error) {
-	args := []string{"crictl", "info"}
+	args := []string{"crictl", timeoutOverrideFlag, "info"}
 	c := exec.Command("sudo", args...)
 	rr, err := cr.RunCmd(c)
 	if err != nil {
@@ -285,7 +325,7 @@ func getCRIInfo(cr CommandRunner) (map[string]interface{}, error) {
 
 // listCRIImages lists images using crictl
 func listCRIImages(cr CommandRunner) ([]ListImage, error) {
-	c := exec.Command("sudo", "crictl", "images", "--output", "json")
+	c := exec.Command("sudo", "crictl", timeoutOverrideFlag, "images", "--output", "json")
 	rr, err := cr.RunCmd(c)
 	if err != nil {
 		return nil, errors.Wrapf(err, "crictl images")
@@ -311,14 +351,14 @@ func listCRIImages(cr CommandRunner) ([]ListImage, error) {
 }
 
 // criContainerLogCmd returns the command to retrieve the log for a container based on ID
-func criContainerLogCmd(cr CommandRunner, id string, len int, follow bool) string {
+func criContainerLogCmd(cr CommandRunner, id string, length int, follow bool) string {
 	crictl := getCrictlPath(cr)
 	var cmd strings.Builder
 	cmd.WriteString("sudo ")
 	cmd.WriteString(crictl)
 	cmd.WriteString(" logs ")
-	if len > 0 {
-		cmd.WriteString(fmt.Sprintf("--tail %d ", len))
+	if length > 0 {
+		cmd.WriteString(fmt.Sprintf("--tail %d ", length))
 	}
 	if follow {
 		cmd.WriteString("--follow ")
@@ -357,4 +397,9 @@ func checkCNIPlugins(kubernetesVersion semver.Version) error {
 	}
 	_, err := os.Stat("/opt/cni/bin")
 	return err
+}
+
+// Add localhost prefix if the registry part is missing
+func AddLocalhostPrefix(name string) string {
+	return addRegistryPreix(name, "localhost")
 }

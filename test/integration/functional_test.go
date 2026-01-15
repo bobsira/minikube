@@ -42,6 +42,7 @@ import (
 
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/config"
+	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/localpath"
 	"k8s.io/minikube/pkg/minikube/reason"
@@ -55,9 +56,8 @@ import (
 	"github.com/phayes/freeport"
 	"github.com/pkg/errors"
 	"golang.org/x/build/kubernetes/api"
+	"k8s.io/minikube/pkg/minikube/cruntime"
 )
-
-const echoServerImg = "docker.io/kicbase/echo-server"
 
 // validateFunc are for subtests that share a single setup
 type validateFunc func(context.Context, *testing.T, string)
@@ -72,9 +72,26 @@ var runCorpProxy = detect.GithubActionRunner() && runtime.GOOS == "linux" && !ar
 
 // TestFunctional are functionality tests which can safely share a profile in parallel
 func TestFunctional(t *testing.T) {
+	testFunctionalInternal(t, "")
+}
 
+// TestFunctionalNewestKubernetes are functionality run functional tests using
+// NewestKubernetesVersion
+func TestFunctionalNewestKubernetes(t *testing.T) {
+	if strings.Contains(*startArgs, "--kubernetes-version") || constants.NewestKubernetesVersion == constants.DefaultKubernetesVersion {
+		t.Skip()
+	}
+	k8sVersionString := constants.NewestKubernetesVersion
+	t.Run("Version"+k8sVersionString, func(t *testing.T) {
+		testFunctionalInternal(t, k8sVersionString)
+	})
+
+}
+
+func testFunctionalInternal(t *testing.T, k8sVersion string) {
 	profile := UniqueProfileName("functional")
-	ctx, cancel := context.WithTimeout(context.Background(), Minutes(40))
+	ctx := context.WithValue(context.Background(), ContextKey("k8sVersion"), k8sVersion)
+	ctx, cancel := context.WithTimeout(ctx, Minutes(40))
 	defer func() {
 		if !*cleanup {
 			return
@@ -86,7 +103,6 @@ func TestFunctional(t *testing.T) {
 
 		Cleanup(t, profile, cancel)
 	}()
-
 	// Serial tests
 	t.Run("serial", func(t *testing.T) {
 		tests := []struct {
@@ -185,7 +201,7 @@ func cleanupUnwantedImages(ctx context.Context, t *testing.T, profile string) {
 		t.Run("delete echo-server images", func(t *testing.T) {
 			tags := []string{"1.0", profile}
 			for _, tag := range tags {
-				image := fmt.Sprintf("%s:%s", echoServerImg, tag)
+				image := fmt.Sprintf("%s:%s", echoServerImage, tag)
 				rr, err := Run(t, exec.CommandContext(ctx, "docker", "rmi", "-f", image))
 				if err != nil {
 					t.Logf("failed to remove image %q from docker images. args %q: %v", image, rr.Command(), err)
@@ -230,7 +246,7 @@ func validateNodeLabels(ctx context.Context, t *testing.T, profile string) {
 
 // tagAndLoadImage is a helper function to pull, tag, load image (decreases cyclomatic complexity for linter).
 func tagAndLoadImage(ctx context.Context, t *testing.T, profile, taggedImage string) {
-	newPulledImage := fmt.Sprintf("%s:%s", echoServerImg, "latest")
+	newPulledImage := fmt.Sprintf("%s:%s", echoServerImage, "latest")
 	rr, err := Run(t, exec.CommandContext(ctx, "docker", "pull", newPulledImage))
 	if err != nil {
 		t.Fatalf("failed to setup test (pull image): %v\n%s", err, rr.Output())
@@ -296,7 +312,7 @@ func validateImageCommands(ctx context.Context, t *testing.T, profile string) {
 	}
 
 	runImageList(ctx, t, profile, "ImageListShort", "short", "%s")
-	runImageList(ctx, t, profile, "ImageListTable", "table", "| %s")
+	runImageList(ctx, t, profile, "ImageListTable", "table", "│ %s")
 	runImageList(ctx, t, profile, "ImageListJson", "json", "[\"%s")
 	runImageList(ctx, t, profile, "ImageListYaml", "yaml", "- %s")
 
@@ -325,7 +341,7 @@ func validateImageCommands(ctx context.Context, t *testing.T, profile string) {
 		checkImageExists(ctx, t, profile, newImage)
 	})
 
-	taggedImage := fmt.Sprintf("%s:%s", echoServerImg, profile)
+	taggedImage := fmt.Sprintf("%s:%s", echoServerImage, profile)
 	imageFile := "echo-server-save.tar"
 	var imagePath string
 	defer os.Remove(imageFile)
@@ -337,7 +353,7 @@ func validateImageCommands(ctx context.Context, t *testing.T, profile string) {
 			t.Fatalf("failed to get absolute path of file %q: %v", imageFile, err)
 		}
 
-		pulledImage := fmt.Sprintf("%s:%s", echoServerImg, "1.0")
+		pulledImage := fmt.Sprintf("%s:%s", echoServerImage, "1.0")
 		rr, err := Run(t, exec.CommandContext(ctx, "docker", "pull", pulledImage))
 		if err != nil {
 			t.Fatalf("failed to setup test (pull image): %v\n%s", err, rr.Output())
@@ -424,8 +440,11 @@ func validateImageCommands(ctx context.Context, t *testing.T, profile string) {
 		if err != nil {
 			t.Fatalf("saving image from minikube to daemon: %v\n%s", err, rr.Output())
 		}
-
-		rr, err = Run(t, exec.CommandContext(ctx, "docker", "image", "inspect", taggedImage))
+		imageToDelete := taggedImage
+		if ContainerRuntime() == "crio" {
+			imageToDelete = cruntime.AddLocalhostPrefix(imageToDelete)
+		}
+		rr, err = Run(t, exec.CommandContext(ctx, "docker", "image", "inspect", imageToDelete))
 		if err != nil {
 			t.Fatalf("expected image to be loaded into Docker, but image was not found: %v\n%s", err, rr.Output())
 		}
@@ -728,7 +747,7 @@ func validateMinikubeKubectlDirectCall(ctx context.Context, t *testing.T, profil
 	err := os.Link(Target(), dstfn)
 
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed to link kubectl binary from %s to %s: %v", Target(), dstfn, err)
 	}
 	defer os.Remove(dstfn) // clean up
 
@@ -897,7 +916,7 @@ func validateDashboardCmd(ctx context.Context, t *testing.T, profile string) {
 	defer cancel()
 
 	// docs: Run `minikube dashboard --url` to start minikube dashboard and return the URL of it
-	args := []string{"dashboard", "--url", "--port", "36195", "-p", profile, "--alsologtostderr", "-v=1"}
+	args := []string{"dashboard", "--url", "--port", "0", "-p", profile, "--alsologtostderr", "-v=1"}
 	ss, err := Start(t, exec.CommandContext(mctx, Target(), args...))
 	if err != nil {
 		t.Errorf("failed to run minikube dashboard. args %q : %v", args, err)
@@ -910,6 +929,11 @@ func validateDashboardCmd(ctx context.Context, t *testing.T, profile string) {
 	if err != nil {
 		if runtime.GOOS == "windows" {
 			t.Skip(err)
+		}
+		// check if the failure was due to rate limiting
+		rr, logErr := Run(t, exec.CommandContext(ctx, Target(), "-p", profile, "logs"))
+		if logErr == nil && (strings.Contains(rr.Output(), "toomanyrequests") || strings.Contains(rr.Output(), "pull rate limit")) {
+			t.Skipf("Skipping dashboard test due to Docker Hub rate limit: %v", err)
 		}
 		t.Fatal(err)
 	}
@@ -965,7 +989,7 @@ func validateDryRun(ctx context.Context, t *testing.T, profile string) {
 
 	// docs: Run `minikube start --dry-run --memory 250MB`
 	// Too little memory!
-	startArgs := append([]string{"start", "-p", profile, "--dry-run", "--memory", "250MB", "--alsologtostderr"}, StartArgs()...)
+	startArgs := append([]string{"start", "-p", profile, "--dry-run", "--memory", "250MB", "--alsologtostderr"}, StartArgsWithContext(ctx)...)
 	c := exec.CommandContext(mctx, Target(), startArgs...)
 	rr, err := Run(t, c)
 
@@ -982,7 +1006,7 @@ func validateDryRun(ctx context.Context, t *testing.T, profile string) {
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// docs: Run `minikube start --dry-run`
-	startArgs = append([]string{"start", "-p", profile, "--dry-run", "--alsologtostderr", "-v=1"}, StartArgs()...)
+	startArgs = append([]string{"start", "-p", profile, "--dry-run", "--alsologtostderr", "-v=1"}, StartArgsWithContext(ctx)...)
 	c = exec.CommandContext(dctx, Target(), startArgs...)
 	rr, err = Run(t, c)
 	// docs: Make sure the command doesn't raise any error
@@ -1007,7 +1031,7 @@ func validateInternationalLanguage(ctx context.Context, t *testing.T, profile st
 	defer cancel()
 
 	// Too little memory!
-	startArgs := append([]string{"start", "-p", profile, "--dry-run", "--memory", "250MB", "--alsologtostderr"}, StartArgs()...)
+	startArgs := append([]string{"start", "-p", profile, "--dry-run", "--memory", "250MB", "--alsologtostderr"}, StartArgsWithContext(ctx)...)
 	c := exec.CommandContext(mctx, Target(), startArgs...)
 	// docs: Set environment variable `LC_ALL=fr` to enable minikube translation to French
 	c.Env = append(os.Environ(), "LC_ALL=fr")
@@ -1423,18 +1447,13 @@ func validateServiceCmd(ctx context.Context, t *testing.T, profile string) {
 	validateServiceCmdURL(ctx, t, profile)
 }
 
-// validateServiceCmdDeployApp Create a new `registry.k8s.io/echoserver` deployment
+// validateServiceCmdDeployApp Create a new `kickbase/echo_server` deployment
 func validateServiceCmdDeployApp(ctx context.Context, t *testing.T, profile string) {
 	t.Run("DeployApp", func(t *testing.T) {
 		var rr *RunResult
 		var err error
-		// registry.k8s.io/echoserver is not multi-arch
-		if arm64Platform() {
-			rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node", "--image=registry.k8s.io/echoserver-arm:1.8"))
-		} else {
-			rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node", "--image=registry.k8s.io/echoserver:1.8"))
-		}
 
+		rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node", "--image", echoServerImage))
 		if err != nil {
 			t.Fatalf("failed to create hello-node deployment with this command %q: %v.", rr.Command(), err)
 		}
@@ -1574,7 +1593,7 @@ func validateServiceCmdURL(ctx context.Context, t *testing.T, profile string) {
 // isUnexpectedServiceError is used to prevent failing ServiceCmd tests on Docker Desktop due to DeadlineExceeded errors.
 // Due to networking constraints Docker Desktop requires creating an SSH tunnel to connect to a service. This command has
 // to be left running to keep the SSH tunnel connected, so for the ServiceCmd tests we set a timeout context so we can
-// check the output and then the command is terminated, otherwise it would keep runnning forever. So if using Docker
+// check the output and then the command is terminated, otherwise it would keep running forever. So if using Docker
 // Desktop and the DeadlineExceeded, consider it an expected error.
 func isUnexpectedServiceError(ctx context.Context, err error) bool {
 	if err == nil {
@@ -1617,14 +1636,9 @@ func validateServiceCmdConnect(ctx context.Context, t *testing.T, profile string
 
 	var rr *RunResult
 	var err error
-	// docs: Create a new `registry.k8s.io/echoserver` deployment
-	// registry.k8s.io/echoserver is not multi-arch
-	if arm64Platform() {
-		rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node-connect", "--image=registry.k8s.io/echoserver-arm:1.8"))
-	} else {
-		rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node-connect", "--image=registry.k8s.io/echoserver:1.8"))
-	}
 
+	// docs: Create a new `kickbase/echo-server` deployment
+	rr, err = Run(t, exec.CommandContext(ctx, "kubectl", "--context", profile, "create", "deployment", "hello-node-connect", "--image", echoServerImage))
 	if err != nil {
 		t.Fatalf("failed to create hello-node deployment with this command %q: %v.", rr.Command(), err)
 	}
@@ -2215,13 +2229,13 @@ func startHTTPProxy(t *testing.T) (*http.Server, error) {
 
 func startMinikubeWithProxy(ctx context.Context, t *testing.T, profile string, proxyEnv string, addr string) {
 	// Use more memory so that we may reliably fit MySQL and nginx
-	memoryFlag := "--memory=4000"
+	memoryFlag := "--memory=4096"
 	// to avoid failure for mysq/pv on virtualbox on darwin on free github actions,
 	if detect.GithubActionRunner() && VirtualboxDriver() {
-		memoryFlag = "--memory=6000"
+		memoryFlag = "--memory=6144"
 	}
 	// passing --api-server-port so later verify it didn't change in soft start.
-	startArgs := append([]string{"start", "-p", profile, memoryFlag, fmt.Sprintf("--apiserver-port=%d", apiPortTest), "--wait=all"}, StartArgs()...)
+	startArgs := append([]string{"start", "-p", profile, memoryFlag, fmt.Sprintf("--apiserver-port=%d", apiPortTest), "--wait=all"}, StartArgsWithContext(ctx)...)
 	c := exec.CommandContext(ctx, Target(), startArgs...)
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("%s=%s", proxyEnv, addr))

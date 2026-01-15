@@ -32,6 +32,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/registry"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 const (
@@ -61,6 +62,10 @@ const (
 	HyperV = "hyperv"
 	// Parallels driver
 	Parallels = "parallels"
+	// VFKit driver
+	VFKit = "vfkit"
+	// Krunkit driver
+	Krunkit = "krunkit"
 
 	// AliasKVM is driver name alias for kvm2
 	AliasKVM = "kvm"
@@ -171,6 +176,16 @@ func IsQEMU(name string) bool {
 	return name == QEMU2 || name == QEMU
 }
 
+// IsVFKit checks if the driver is vfkit
+func IsVFKit(name string) bool {
+	return name == VFKit
+}
+
+// IsKrunkit checks if the driver is krunkit
+func IsKrunkit(name string) bool {
+	return name == Krunkit
+}
+
 // IsVM checks if the driver is a VM
 func IsVM(name string) bool {
 	if IsKIC(name) || BareMetal(name) {
@@ -202,6 +217,21 @@ func IsVMware(name string) bool {
 // IsHyperV check if the driver is Hyper-V
 func IsHyperV(name string) bool {
 	return name == HyperV
+}
+
+// IsHyperKit check if the driver is HyperKit
+func IsHyperKit(name string) bool {
+	return name == HyperKit
+}
+
+// SupportsNetworkFlag reutuns if driver supports the --network flag
+func SupportsNetworkFlag(name string) bool {
+	return IsKIC(name) || IsKVM(name) || IsQEMU(name) || IsVFKit(name)
+}
+
+// SupportsVirtiofsMounts returns if driver supports virtiofs mounts
+func SupportsVirtiofsMounts(name string) bool {
+	return IsVFKit(name) || IsKrunkit(name)
 }
 
 // AllowsPreload returns if preload is allowed for the driver
@@ -287,20 +317,20 @@ func FlagDefaults(name string) FlagHints {
 }
 
 // Choices returns a list of drivers which are possible on this system
-func Choices(vm bool) []registry.DriverState {
-	options := registry.Available(vm)
+func Choices(vm bool, options *run.CommandOptions) []registry.DriverState {
+	available := registry.Available(vm, options)
 
 	// Descending priority for predictability and appearance
-	sort.Slice(options, func(i, j int) bool {
-		return options[i].Priority > options[j].Priority
+	sort.Slice(available, func(i, j int) bool {
+		return available[i].Priority > available[j].Priority
 	})
-	return options
+	return available
 }
 
 // Suggest returns a suggested driver, alternate drivers, and rejected drivers
-func Suggest(options []registry.DriverState) (registry.DriverState, []registry.DriverState, []registry.DriverState) {
+func Suggest(driversState []registry.DriverState) (registry.DriverState, []registry.DriverState, []registry.DriverState) {
 	pick := registry.DriverState{}
-	for _, ds := range options {
+	for _, ds := range driversState {
 		if !ds.State.Installed {
 			continue
 		}
@@ -327,7 +357,7 @@ func Suggest(options []registry.DriverState) (registry.DriverState, []registry.D
 
 	alternates := []registry.DriverState{}
 	rejects := []registry.DriverState{}
-	for _, ds := range options {
+	for _, ds := range driversState {
 		if ds != pick {
 			if !ds.State.Installed {
 				ds.Rejection = fmt.Sprintf("Not installed: %v", ds.State.Error)
@@ -353,12 +383,12 @@ func Suggest(options []registry.DriverState) (registry.DriverState, []registry.D
 }
 
 // Status returns the status of a driver
-func Status(name string) registry.DriverState {
+func Status(name string, options *run.CommandOptions) registry.DriverState {
 	d := registry.Driver(name)
 	stateChannel := make(chan registry.State)
 	timeoutChannel := time.After(20 * time.Second)
 	go func() {
-		stateChannel <- registry.Status(name)
+		stateChannel <- registry.Status(name, options)
 	}()
 	select {
 	case s := <-stateChannel:

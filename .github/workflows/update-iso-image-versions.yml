@@ -1,17 +1,25 @@
 name: "update-iso-image-versions"
 on:
   workflow_dispatch:
+    inputs:
+      make_targets:
+        type: string
+        description: "Comma-separated list of make targets to run (e.g., update-buildkit-version,update-cni-plugins-version)"
+        required: true
+        # Uncomment after crictl/cri-o issue resolved: https://github.com/kubernetes/minikube/issues/18359
+        # default: "update-buildkit-version,update-cni-plugins-version,update-containerd-version,update-cri-o-version,update-crictl-version,update-crun-version,update-docker-version,update-docker-buildx-version,update-golang-version,update-nerdctl-version,update-nerdctld-version,update-runc-version,update-debian-version"
+        default: "update-buildkit-version,update-cni-plugins-version,update-crun-version,update-docker-version,update-golang-version,update-runc-version,update-debian-version"
 env:
   GOPROXY: https://proxy.golang.org
-  GO_VERSION: '1.22.5'
+  GO_VERSION: '1.25.5'
 permissions:
   contents: read
 jobs:
   update-all:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
         with:
           go-version: ${{env.GO_VERSION}}
       - name: Bump versions
@@ -30,20 +38,12 @@ jobs:
           OLD_NERDCTLD=$(DEP=nerdctld make get-dependency-version)
           OLD_RUNC=$(DEP=runc make get-dependency-version)
           OLD_UBUNTU=$(DEP=ubuntu make get-dependency-version)
-          make update-buildkit-version
-          make update-cni-plugins-version
-          make update-containerd-version
-          # Uncomment after crictl/cri-o issue resolved: https://github.com/kubernetes/minikube/issues/18359
-          # make update-cri-o-version
-          # make update-crictl-version
-          make update-crun-version
-          make update-docker-version
-          make update-docker-buildx-version
-          make update-golang-version
-          make update-nerdctl-version
-          make update-nerdctld-version
-          make update-runc-version
-          make update-ubuntu-version
+          TARGETS="${{ inputs.make_targets }}"
+          IFS=',' read -ra TARGET_ARRAY <<< "$TARGETS"
+          for TARGET in "${TARGET_ARRAY[@]}"; do
+            echo "Running make $TARGET"
+            make $TARGET
+          done
           NEW_BUILDKIT=$(DEP=buildkit make get-dependency-version)
           NEW_CNI_PLUGINS=$(DEP=cni-plugins make get-dependency-version)
           NEW_CONTAINERD=$(DEP=containerd make get-dependency-version)
@@ -116,7 +116,7 @@ jobs:
       - name: Create PR
         id: createPR
         if: ${{ steps.bumpVersions.outputs.changes != '' }}
-        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c
+        uses: peter-evans/create-pull-request@98357b18bf14b5342f975ff684046ec3b2a07725
         with:
           token: ${{ secrets.MINIKUBE_BOT_PAT }}
           commit-message: 'Kicbase/ISO: Update dependency versions'
@@ -131,7 +131,7 @@ jobs:
           body: |
             Changelog:
             ${{ steps.bumpVersions.outputs.changelog }}
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         if: ${{ steps.bumpVersions.outputs.changes != '' }}
         with:
           github-token: ${{ secrets.MINIKUBE_BOT_PAT }}
@@ -142,7 +142,7 @@ jobs:
               repo: context.repo.repo,
               body: 'ok-to-build-image'
             })
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         if: ${{ steps.bumpVersions.outputs.changes != '' }}
         with:
           github-token: ${{ secrets.MINIKUBE_BOT_PAT }}

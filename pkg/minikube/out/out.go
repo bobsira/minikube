@@ -66,9 +66,11 @@ var (
 	// JSON is whether or not we should output stdout in JSON format. Set using SetJSON()
 	JSON = false
 	// spin is spinner showed at starting minikube
-	spin = spinner.New(spinner.CharSets[style.SpinnerCharacter], 100*time.Millisecond)
+	spin = spinner.New(spinner.CharSets[style.SpinnerCharacter], 100*time.Millisecond, spinner.WithWriter(outFile))
 	// defaultBoxCfg is the default style config for cli box output
 	defaultBoxCfg = box.Config{Py: 1, Px: 4, Type: "Round", Color: "Red"}
+	// alreadyShoweddGitHubIssueMessage is used to prevent showing the GitHub issue message multiple times
+	alreadyShoweddGitHubIssueMessage = false
 )
 
 // MaxLogEntries controls the number of log entries to show for each source
@@ -91,7 +93,7 @@ func Step(st style.Enum, format string, a ...V) {
 		Infof(format, a...)
 		return
 	}
-	outStyled, _ := stylized(st, useColor, format, a...)
+	outStyled, _, _ := stylized(st, useColor, format, a...)
 	if JSON {
 		register.PrintStep(outStyled)
 		klog.Info(outStyled)
@@ -107,31 +109,31 @@ func Styled(st style.Enum, format string, a ...V) {
 		Infof(format, a...)
 		return
 	}
-	outStyled, spinner := stylized(st, useColor, format, a...)
-	if spinner {
-		spinnerString(outStyled)
+	outStyled, useSpinner, hideAfterSpin := stylized(st, useColor, format, a...)
+	if useSpinner {
+		spinnerString(outStyled, hideAfterSpin)
 	} else {
 		String(outStyled)
 	}
 }
 
 func boxedCommon(printFunc func(format string, a ...interface{}), cfg box.Config, title string, format string, a ...V) {
-	box := box.New(cfg)
+	b := box.New(cfg)
 	if !useColor {
-		box.Config.Color = nil
+		b.Color = nil
 	}
 	str := Sprintf(style.None, format, a...)
-	printFunc(box.String(title, strings.TrimSpace(str)))
+	printFunc(b.String(title, strings.TrimSpace(str)))
 }
 
 // Boxed writes a stylized and templated message in a box to stdout using the default style config
 func Boxed(format string, a ...V) {
-	boxedCommon(String, defaultBoxCfg, "", format, a...)
+	boxedCommon(Stringf, defaultBoxCfg, "", format, a...)
 }
 
 // BoxedErr writes a stylized and templated message in a box to stderr using the default style config
 func BoxedErr(format string, a ...V) {
-	boxedCommon(Err, defaultBoxCfg, "", format, a...)
+	boxedCommon(Errf, defaultBoxCfg, "", format, a...)
 }
 
 // BoxedWithConfig writes a templated message in a box with customized style config to stdout
@@ -141,26 +143,50 @@ func BoxedWithConfig(cfg box.Config, st style.Enum, title string, text string, a
 	}
 	// need to make sure no newlines are in the title otherwise box-cli-maker panics
 	title = strings.ReplaceAll(title, "\n", "")
-	boxedCommon(String, cfg, title, text, a...)
+	boxedCommon(Stringf, cfg, title, text, a...)
 }
 
 // Sprintf is used for returning the string (doesn't write anything)
 func Sprintf(st style.Enum, format string, a ...V) string {
-	outStyled, _ := stylized(st, useColor, format, a...)
+	outStyled, _, _ := stylized(st, useColor, format, a...)
 	return outStyled
 }
 
 // Infof is used for informational logs (options, env variables, etc)
 func Infof(format string, a ...V) {
-	outStyled, _ := stylized(style.Option, useColor, format, a...)
+	outStyled, _, _ := stylized(style.Option, useColor, format, a...)
 	if JSON {
 		register.PrintInfo(outStyled)
 	}
 	String(outStyled)
 }
 
+// String writes a basic string to stdout
+func String(s string) {
+	// Flush log buffer so that output order makes sense
+	klog.Flush()
+	defer klog.Flush()
+
+	if silent || JSON {
+		klog.Info(s)
+		return
+	}
+
+	if outFile == nil {
+		klog.Warningf("[unset outFile]: %s", s)
+		return
+	}
+	klog.Info(s)
+	// if spin is active from a previous step, it will stop spinner displaying
+	if spin.Active() {
+		spin.Stop()
+	}
+
+	Output(outFile, s)
+}
+
 // String writes a basic formatted string to stdout
-func String(format string, a ...interface{}) {
+func Stringf(format string, a ...interface{}) {
 	// Flush log buffer so that output order makes sense
 	klog.Flush()
 	defer klog.Flush()
@@ -180,11 +206,33 @@ func String(format string, a ...interface{}) {
 		spin.Stop()
 	}
 
-	Output(outFile, format, a...)
+	Outputf(outFile, format, a...)
 }
 
-// Output writes a basic formatted string
-func Output(file fdWriter, format string, a ...interface{}) {
+// Output writes a basic string
+func Output(file fdWriter, s string) {
+	if _, err := fmt.Fprint(file, s); err != nil {
+		klog.Errorf("Fprint failed: %v", err)
+	}
+}
+
+// outputSpining writes a basic string with spinining
+func outputSpining(file fdWriter, s string, hideAfterSpin bool) {
+	spin.Writer = file
+	spin.Prefix = s
+	if hideAfterSpin {
+		spin.UpdateCharSet(spinner.CharSets[style.SpinnerSubStepCharacter])
+		spin.FinalMSG = ""
+	} else {
+		spin.UpdateCharSet(spinner.CharSets[style.SpinnerCharacter])
+		spin.FinalMSG = s + "\n"
+	}
+	spin.Start()
+
+}
+
+// Outputf writes a basic formatted string
+func Outputf(file fdWriter, format string, a ...interface{}) {
 	_, err := fmt.Fprintf(file, format, a...)
 	if err != nil {
 		klog.Errorf("Fprintf failed: %v", err)
@@ -192,38 +240,59 @@ func Output(file fdWriter, format string, a ...interface{}) {
 }
 
 // spinnerString writes a basic formatted string to stdout with spinner character
-func spinnerString(format string, a ...interface{}) {
+func spinnerString(s string, hideAfterSpin bool) {
 	// Flush log buffer so that output order makes sense
 	klog.Flush()
 
 	if outFile == nil {
-		klog.Warningf("[unset outFile]: %s", fmt.Sprintf(format, a...))
+		klog.Warningf("[unset outFile]: %s", s)
 		return
 	}
 
-	klog.Infof(format, a...)
+	klog.Info(s)
 	// if spin is active from a previous step, it will stop spinner displaying
 	if spin.Active() {
 		spin.Stop()
 	}
-	Output(outFile, format, a...)
-	// Start spinning at the end of the printed line
-	spin.Start()
+	outputSpining(outFile, s, hideAfterSpin)
 }
 
 // Ln writes a basic formatted string with a newline to stdout
 func Ln(format string, a ...interface{}) {
-	String(format+"\n", a...)
+	Stringf(format+"\n", a...)
 }
 
 // ErrT writes a stylized and templated error message to stderr
 func ErrT(st style.Enum, format string, a ...V) {
-	errStyled, _ := stylized(st, useColor, format, a...)
+	errStyled, _, _ := stylized(st, useColor, format, a...)
 	Err(errStyled)
 }
 
-// Err writes a basic formatted string to stderr
-func Err(format string, a ...interface{}) {
+// Err writes a basic string to stderr
+func Err(s string) {
+	if JSON {
+		register.PrintError(s)
+		klog.Warning(s)
+		return
+	}
+	register.RecordError(s)
+
+	if errFile == nil {
+		klog.Errorf("[unset errFile]: %s", s)
+		return
+	}
+
+	klog.Warning(s)
+
+	// if spin is active from a previous step, it will stop spinner displaying
+	if spin.Active() {
+		spin.Stop()
+	}
+	Output(errFile, s)
+}
+
+// Errf writes a basic formatted string to stderr
+func Errf(format string, a ...interface{}) {
 	if JSON {
 		register.PrintError(format)
 		klog.Warningf(format, a...)
@@ -242,12 +311,12 @@ func Err(format string, a ...interface{}) {
 	if spin.Active() {
 		spin.Stop()
 	}
-	Output(errFile, format, a...)
+	Outputf(errFile, format, a...)
 }
 
 // ErrLn writes a basic formatted string with a newline to stderr
 func ErrLn(format string, a ...interface{}) {
-	Err(format+"\n", a...)
+	Errf(format+"\n", a...)
 }
 
 // SuccessT is a shortcut for writing a templated success message to stdout
@@ -262,7 +331,7 @@ func WarningT(format string, a ...V) {
 		if spin.Active() {
 			spin.Stop()
 		}
-		st, _ := stylized(style.Warning, useColor, format, a...)
+		st, _, _ := stylized(style.Warning, useColor, format, a...)
 		register.PrintWarning(st)
 		klog.Warning(st)
 		return
@@ -289,6 +358,7 @@ func SetSilent(q bool) {
 // SetOutFile configures which writer standard output goes to.
 func SetOutFile(w fdWriter) {
 	klog.Infof("Setting OutFile to fd %d ...", w.Fd())
+	spin.Writer = w
 	outFile = w
 	useColor = wantsColor(w)
 }
@@ -361,7 +431,7 @@ func LogEntries(msg string, err error, entries map[string][]string) {
 
 // displayError prints the error and displays the standard minikube error messaging
 func displayError(msg string, err error) {
-	klog.Warningf(fmt.Sprintf("%s: %v", msg, err))
+	klog.Warningf("%s: %v", msg, err)
 	if JSON {
 		ErrT(style.Fatal, "{{.msg}}: {{.err}}", V{"msg": translate.T(msg), "err": err})
 		return
@@ -409,6 +479,9 @@ func command() (string, error) {
 }
 
 func displayGitHubIssueMessage() {
+	if alreadyShoweddGitHubIssueMessage {
+		return
+	}
 	cmd, err := command()
 	if err != nil {
 		klog.Warningf("failed to get command: %v", err)
@@ -428,6 +501,7 @@ func displayGitHubIssueMessage() {
 	}
 
 	BoxedErr(msg)
+	alreadyShoweddGitHubIssueMessage = true
 }
 
 // applyTmpl applies formatting
@@ -452,12 +526,6 @@ func applyTmpl(format string, a ...V) string {
 
 	// Return quotes back to normal
 	out = html.UnescapeString(out)
-
-	// escape any outstanding '%' signs so that they don't get interpreted
-	// as a formatting directive down the line
-	out = strings.ReplaceAll(out, "%", "%%")
-	// avoid doubling up in case this function is called multiple times
-	out = strings.ReplaceAll(out, "%%%%", "%%")
 	return out
 }
 

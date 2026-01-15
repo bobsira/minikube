@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/rand"
 	"net"
 	"os"
@@ -33,20 +32,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/log"
-	"github.com/docker/machine/libmachine/mcnutils"
-	"github.com/docker/machine/libmachine/ssh"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/pkg/errors"
+	"k8s.io/minikube/pkg/libmachine/drivers"
+	"k8s.io/minikube/pkg/libmachine/log"
+	"k8s.io/minikube/pkg/libmachine/mcnutils"
+	"k8s.io/minikube/pkg/libmachine/ssh"
+	"k8s.io/minikube/pkg/libmachine/state"
 
 	"k8s.io/klog/v2"
-	pkgdrivers "k8s.io/minikube/pkg/drivers"
+	"k8s.io/minikube/pkg/drivers/common"
 	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/firewall"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/network"
 	"k8s.io/minikube/pkg/util/retry"
@@ -54,6 +54,7 @@ import (
 
 const (
 	isoFilename        = "boot2docker.iso"
+	serialFileName     = "serial.log"
 	privateNetworkName = "docker-machines"
 
 	defaultSSHUser = "docker"
@@ -61,7 +62,7 @@ const (
 
 type Driver struct {
 	*drivers.BaseDriver
-	*pkgdrivers.CommonDriver
+	*common.CommonDriver
 	EnginePort int
 	FirstQuery bool
 
@@ -143,7 +144,7 @@ func (d *Driver) GetURL() (string, error) {
 	return fmt.Sprintf("tcp://%s:%d", ip, port), nil
 }
 
-func NewDriver(hostName, storePath string) drivers.Driver {
+func NewDriver(hostName, storePath string, options *run.CommandOptions) drivers.Driver {
 	return &Driver{
 		BIOS:           runtime.GOARCH != "arm64",
 		PrivateNetwork: privateNetworkName,
@@ -151,6 +152,9 @@ func NewDriver(hostName, storePath string) drivers.Driver {
 			SSHUser:     defaultSSHUser,
 			MachineName: hostName,
 			StorePath:   storePath,
+		},
+		CommonDriver: &common.CommonDriver{
+			CommandOptions: *options,
 		},
 	}
 }
@@ -285,8 +289,8 @@ func (d *Driver) Create() error {
 	if d.ExtraDisks > 0 {
 		log.Info("Creating extra disk images...")
 		for i := 0; i < d.ExtraDisks; i++ {
-			path := pkgdrivers.ExtraDiskPath(d.BaseDriver, i)
-			if err := pkgdrivers.CreateRawDisk(path, d.DiskSize); err != nil {
+			path := common.ExtraDiskPath(d.BaseDriver, i)
+			if err := common.CreateRawDisk(path, d.DiskSize); err != nil {
 				return err
 			}
 		}
@@ -327,8 +331,8 @@ func parsePortRange(rawPortRange string) (int, int, error) {
 	return minPort, maxPort, nil
 }
 
-func getRandomPortNumberInRange(min, max int) int {
-	return rand.Intn(max-min) + min
+func getRandomPortNumberInRange(minimum, maximum int) int {
+	return rand.Intn(maximum-minimum) + minimum
 }
 
 func getAvailableTCPPortFromRange(minPort, maxPort int) (int, error) {
@@ -464,12 +468,16 @@ func (d *Driver) Start() error {
 			"virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=config-2")
 	}
 
+	serialPath := d.ResolveStorePath(serialFileName)
+	startCmd = append(startCmd,
+		"-serial", fmt.Sprintf("file:%s", serialPath))
+
 	for i := 0; i < d.ExtraDisks; i++ {
 		// use a higher index for extra disks to reduce ID collision with current or future
 		// low-indexed devices (e.g., firmware, ISO CDROM, cloud config, and network device)
 		index := i + 10
 		startCmd = append(startCmd,
-			"-drive", fmt.Sprintf("file=%s,index=%d,media=disk,format=raw,if=virtio", pkgdrivers.ExtraDiskPath(d.BaseDriver, i), index),
+			"-drive", fmt.Sprintf("file=%s,index=%d,media=disk,format=raw,if=virtio", common.ExtraDiskPath(d.BaseDriver, i), index),
 		)
 	}
 
@@ -505,17 +513,18 @@ func (d *Driver) Start() error {
 	case "socket_vmnet":
 		var err error
 		getIP := func() error {
-			// QEMU requires MAC address with leading 0s
-			// But socket_vmnet writes the MAC address to the dhcp leases file with leading 0s stripped
-			mac := pkgdrivers.TrimMacAddress(d.MACAddress)
-			d.IPAddress, err = pkgdrivers.GetIPAddressByMACAddress(mac)
+			d.IPAddress, err = common.GetIPAddressByMACAddress(d.MACAddress)
 			if err != nil {
 				return errors.Wrap(err, "failed to get IP address")
 			}
 			return nil
 		}
 		// Implement a retry loop because IP address isn't added to dhcp leases file immediately
-		for i := 0; i < 60; i++ {
+		multiplier := 1
+		if detect.NestedVM() {
+			multiplier = 3 // will help with running in Free github action Macos VMs (takes 112+ retries on average)
+		}
+		for i := 0; i < 60*multiplier; i++ {
 			log.Debugf("Attempt %d", i)
 			err = getIP()
 			if err == nil {
@@ -531,7 +540,7 @@ func (d *Driver) Start() error {
 		if !isBootpdError(err) {
 			return errors.Wrap(err, "IP address never found in dhcp leases file")
 		}
-		if unblockErr := firewall.UnblockBootpd(); unblockErr != nil {
+		if unblockErr := firewall.UnblockBootpd(&d.CommandOptions); unblockErr != nil {
 			klog.Errorf("failed unblocking bootpd from firewall: %v", unblockErr)
 			exit.Error(reason.IfBootpdFirewall, "ip not found", err)
 		}
@@ -539,9 +548,7 @@ func (d *Driver) Start() error {
 		return fmt.Errorf("ip not found: %v", err)
 	}
 
-	log.Infof("Waiting for VM to start (ssh -p %d docker@%s)...", d.SSHPort, d.IPAddress)
-
-	return WaitForTCPWithDelay(fmt.Sprintf("%s:%d", d.IPAddress, d.SSHPort), time.Second)
+	return common.WaitForSSHAccess(d)
 }
 
 func hardwareAcceleration() string {
@@ -862,20 +869,4 @@ func (d *Driver) RunQMPCommand(command string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("%s failed: %v", command, response.Return)
 	}
 	return response.Return, nil
-}
-
-func WaitForTCPWithDelay(addr string, duration time.Duration) error {
-	for {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			continue
-		}
-		defer conn.Close()
-		if _, err := conn.Read(make([]byte, 1)); err != nil && err != io.EOF {
-			time.Sleep(duration)
-			continue
-		}
-		break
-	}
-	return nil
 }

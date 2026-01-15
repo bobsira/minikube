@@ -23,22 +23,40 @@ date: 2018-01-02
   ```shell
   sudo sysctl net.core.bpf_jit_harden
   ```
+
   - If it's not `0` run:
   ```shell
   echo "net.core.bpf_jit_harden=0" | sudo tee -a /etc/sysctl.conf
   sudo sysctl -p
   ```
 
-- Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on your host machine
+- Install NVIDIA support using one of:
+  - Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on your host machine
+  - Enable [NVIDIA CDI resources](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html) on your host machine.
 
 - Configure Docker:
   ```shell
   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
   ```
-- Start minikube:
+
+- Delete existing minikube (optional)
+
+  If you have an existing minikube instance, you may need to delete it if it was built before installing the nvidia runtime shim.
   ```shell
-  minikube start --driver docker --container-runtime docker --gpus all
+  minikube delete
   ```
+  This will make sure minikube does any required setup or addon installs now that the nvidia runtime is available.
+
+- Start minikube with one of:
+  - The NVIDIA Container Toolkit
+    ```shell
+    minikube start --driver docker --container-runtime docker --gpus all
+    ```
+  - NVIDIA CDI resources
+    ```shell
+    minikube start --driver docker --container-runtime docker --gpus nvidia.com
+    ```
+
 {{% /tab %}}
 {{% tab none %}}
 ## Using the 'none' driver
@@ -67,10 +85,6 @@ to expose GPUs with `--driver=kvm`. Please don't mix these instructions.
 
 When using NVIDIA GPUs with the kvm driver, we passthrough spare GPUs on the
 host to the minikube VM. Doing so has a few prerequisites:
-
-- You must install the [kvm driver]({{< ref "/docs/drivers/kvm2" >}}) If you already had
-  this installed make sure that you fetch the latest
-  `docker-machine-driver-kvm` binary that has GPU support.
 
 - Your CPU must support IOMMU. Different vendors have different names for this
   technology. Intel calls it Intel VT-d. AMD calls it AMD-Vi. Your motherboard
@@ -102,9 +116,10 @@ host to the minikube VM. Doing so has a few prerequisites:
 
   If this succeeded, run the following commands:
   ```shell
-  minikube addons enable nvidia-gpu-device-plugin
+  minikube addons enable nvidia-device-plugin
   minikube addons enable nvidia-driver-installer
   ```
+  NOTE: `nvidia-gpu-device-plugin` addon has been deprecated and it's functionality is merged inside of `nvidia-device-plugin` addon.
 
   This will install the NVIDIA driver (that works for GeForce/Quadro cards)
   on the VM.
@@ -135,7 +150,7 @@ drivers supported by minikube for macOS doesn't support GPU passthrough:
 - [moby/hyperkit#159](https://github.com/moby/hyperkit/issues/159)
 - [VirtualBox docs](https://www.virtualbox.org/manual/ch09.html#pcipassthrough)
 
-Also: 
+Also:
 
 - For quite a while, all Mac hardware (both laptops and desktops) have come with
   Intel or AMD GPUs (and not with NVIDIA GPUs). Recently, Apple added [support

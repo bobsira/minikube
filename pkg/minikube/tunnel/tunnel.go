@@ -23,11 +23,11 @@ import (
 	"os/exec"
 	"regexp"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
 	"github.com/pkg/errors"
 	typed_core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/driver"
 )
@@ -100,7 +100,7 @@ func (t *tunnel) cleanup() *Status {
 	err := t.router.Cleanup(t.status.TunnelID.Route)
 	if err != nil {
 		t.status.RouteError = errors.Errorf("error cleaning up route: %v", err)
-		klog.V(3).Infof(t.status.RouteError.Error())
+		klog.V(3).Info(t.status.RouteError.Error())
 	} else {
 		err = t.registry.Remove(t.status.TunnelID.Route)
 		if err != nil {
@@ -211,7 +211,7 @@ func setupBridge(t *tunnel) {
 	command = exec.Command("sudo", "ifconfig", "bridge100", "deletem", member)
 	klog.Infof("About to run command: %s\n", command.Args)
 	response, err = command.CombinedOutput()
-	klog.Infof(string(response))
+	klog.Info(string(response))
 	if err != nil {
 		t.status.RouteError = fmt.Errorf("couldn't remove member %s: %s", member, err)
 		return
@@ -220,7 +220,7 @@ func setupBridge(t *tunnel) {
 	command = exec.Command("sudo", "ifconfig", "bridge100", "addm", member)
 	klog.Infof("About to run command: %s\n", command.Args)
 	response, err = command.CombinedOutput()
-	klog.Infof(string(response))
+	klog.Info(string(response))
 	if err != nil {
 		t.status.RouteError = fmt.Errorf("couldn't re-add member %s: %s", member, err)
 		return

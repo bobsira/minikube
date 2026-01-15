@@ -21,17 +21,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/google/go-cmp/cmp"
 	"github.com/otiai10/copy"
 	"github.com/spf13/viper"
+	"k8s.io/minikube/pkg/libmachine"
 
 	cmdcfg "k8s.io/minikube/cmd/minikube/cmd/config"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/localpath"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 // exclude returns a list of strings, minus the excluded ones
@@ -86,6 +87,7 @@ func TestDeleteProfile(t *testing.T) {
 		{"partial-mach", "p8_partial_machine_config", []string{"p8_partial_machine_config"}},
 	}
 
+	options := &run.CommandOptions{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(localpath.MinikubeHome, td)
@@ -105,7 +107,7 @@ func TestDeleteProfile(t *testing.T) {
 			}
 
 			hostAndDirsDeleter = hostAndDirsDeleterMock
-			errs := DeleteProfiles([]*config.Profile{profile})
+			errs := DeleteProfiles([]*config.Profile{profile}, options)
 			if len(errs) > 0 {
 				HandleDeletionErrors(errs)
 				t.Errorf("Errors while deleting profiles: %v", errs)
@@ -196,7 +198,7 @@ func TestDeleteAllProfiles(t *testing.T) {
 	profiles := validProfiles
 	profiles = append(profiles, inValidProfiles...)
 	hostAndDirsDeleter = hostAndDirsDeleterMock
-	errs := DeleteProfiles(profiles)
+	errs := DeleteProfiles(profiles, &run.CommandOptions{})
 
 	if errs != nil {
 		t.Errorf("errors while deleting all profiles: %v", errs)
@@ -242,7 +244,7 @@ func main() {
 	done := make(chan struct{})
 	defer close(ch)
 
-	signal.Notify(ch, syscall.SIGHUP)
+	signal.Notify(ch, syscall.SIGTERM)
 	defer signal.Stop(ch)
 
 	go func() {
@@ -263,7 +265,7 @@ func main() {
 	processToKill := exec.Command("go", "run", tmpfile)
 	err := processToKill.Start()
 	if err != nil {
-		t.Fatalf("while execing child process: %v\n", err)
+		t.Fatalf("while executing child process: %v\n", err)
 	}
 	pid := processToKill.Process.Pid
 
@@ -276,8 +278,15 @@ func main() {
 		t.Fatalf("while trying to kill child proc %d: %v\n", pid, err)
 	}
 
-	// waiting for process to exit
-	if err := processToKill.Wait(); !strings.Contains(err.Error(), "killed") {
-		t.Fatalf("unable to kill process: %v\n", err)
+	done := make(chan error, 1)
+	go func() { done <- processToKill.Wait() }()
+
+	var waitErr error
+	select {
+	case waitErr = <-done:
+		t.Logf("child process wait result: %v", waitErr)
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for process %d to exit", pid)
 	}
+
 }

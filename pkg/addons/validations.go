@@ -17,7 +17,9 @@ limitations under the License.
 package addons
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/spf13/viper"
@@ -26,6 +28,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/cruntime"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 const volumesnapshotsAddon = "volumesnapshots"
@@ -46,26 +49,26 @@ const volumesnapshotsDisabledMsg = `[WARNING] For full functionality, the 'csi-h
 You can enable 'volumesnapshots' addon by running: 'minikube addons enable volumesnapshots'
 `
 
-func isRuntimeContainerd(cc *config.ClusterConfig, _, _ string) error {
+func isRuntimeContainerd(cc *config.ClusterConfig, _, _ string, _ *run.CommandOptions) error {
 	r, err := cruntime.New(cruntime.Config{Type: cc.KubernetesConfig.ContainerRuntime})
 	if err != nil {
 		return err
 	}
 	_, ok := r.(*cruntime.Containerd)
 	if !ok {
-		return fmt.Errorf(containerdOnlyAddonMsg)
+		return errors.New(containerdOnlyAddonMsg)
 	}
 	return nil
 }
 
 // isVolumesnapshotsEnabled is a validator that prints out a warning if the volumesnapshots addon
 // is disabled (does not return any errors!)
-func isVolumesnapshotsEnabled(cc *config.ClusterConfig, _, value string) error {
+func isVolumesnapshotsEnabled(cc *config.ClusterConfig, _, value string, _ *run.CommandOptions) error {
 	isCsiDriverEnabled, _ := strconv.ParseBool(value)
 	// assets.Addons[].IsEnabled() returns the current status of the addon or default value.
 	// config.AddonList contains list of addons to be enabled.
 	addonList := viper.GetStringSlice(config.AddonListFlag)
-	isVolumesnapshotsEnabled := assets.Addons[volumesnapshotsAddon].IsEnabled(cc) || contains(addonList, volumesnapshotsAddon)
+	isVolumesnapshotsEnabled := assets.Addons[volumesnapshotsAddon].IsEnabled(cc) || slices.Contains(addonList, volumesnapshotsAddon)
 	if isCsiDriverEnabled && !isVolumesnapshotsEnabled {
 		// just print out a warning directly, we don't want to return any errors since
 		// that would prevent the addon from being enabled (callbacks wouldn't be run)
@@ -74,7 +77,7 @@ func isVolumesnapshotsEnabled(cc *config.ClusterConfig, _, value string) error {
 	return nil
 }
 
-func isKVMDriverForNVIDIA(cc *config.ClusterConfig, name, _ string) error {
+func isKVMDriverForNVIDIA(cc *config.ClusterConfig, name, _ string, _ *run.CommandOptions) error {
 	if driver.IsKVM(cc.Driver) {
 		return nil
 	}
@@ -92,13 +95,4 @@ func isAddonValid(name string) (*Addon, bool) {
 		}
 	}
 	return nil, false
-}
-
-func contains(slice []string, val string) bool {
-	for _, item := range slice {
-		if item == val {
-			return true
-		}
-	}
-	return false
 }
