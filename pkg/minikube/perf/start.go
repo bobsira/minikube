@@ -23,8 +23,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-
-	"github.com/pkg/errors"
 )
 
 const (
@@ -63,20 +61,20 @@ func CompareMinikubeStart(ctx context.Context, binaries []*Binary) error {
 	return nil
 }
 
-func collectResults(ctx context.Context, binaries []*Binary, driver string, runtime string) (*resultManager, error) {
+func collectResults(ctx context.Context, binaries []*Binary, driver string, runtimeName string) (*resultManager, error) {
 	rm := newResultManager()
 	for run := 0; run < runs; run++ {
 		log.Printf("Executing run %d/%d...", run+1, runs)
 		for _, binary := range binaries {
-			r, err := timeMinikubeStart(ctx, binary, driver, runtime)
+			r, err := timeMinikubeStart(ctx, binary, driver, runtimeName)
 			if err != nil {
-				return nil, errors.Wrapf(err, "timing run %d with %s", run, binary.Name())
+				return nil, fmt.Errorf("timing run %d with %s: %w", run, binary.Name(), err)
 			}
 			rm.addResult(binary, "start", *r)
 			if !skipIngress(driver) {
 				r, err = timeEnableIngress(ctx, binary)
 				if err != nil {
-					return nil, errors.Wrapf(err, "timing run %d with %s", run, binary.Name())
+					return nil, fmt.Errorf("timing run %d with %s: %w", run, binary.Name(), err)
 				}
 				rm.addResult(binary, "ingress", *r)
 			}
@@ -97,31 +95,31 @@ func average(nums []float64) float64 {
 	return total / float64(len(nums))
 }
 
-func downloadArtifacts(ctx context.Context, binaries []*Binary, driver string, runtime string) error {
+func downloadArtifacts(ctx context.Context, binaries []*Binary, driver string, runtimeName string) error {
 	for _, b := range binaries {
-		c := exec.CommandContext(ctx, b.path, "start", fmt.Sprintf("--driver=%s", driver), fmt.Sprintf("--container-runtime=%s", runtime))
+		c := exec.CommandContext(ctx, b.path, "start", fmt.Sprintf("--driver=%s", driver), fmt.Sprintf("--container-runtime=%s", runtimeName))
 		c.Stderr = os.Stderr
 		log.Printf("Running: %v...", c.Args)
 		if err := c.Run(); err != nil {
-			return errors.Wrap(err, "artifact download start")
+			return fmt.Errorf("artifact download start: %w", err)
 		}
 		c = exec.CommandContext(ctx, b.path, "delete")
 		log.Printf("Running: %v...", c.Args)
 		if err := c.Run(); err != nil {
-			return errors.Wrap(err, "artifact download delete")
+			return fmt.Errorf("artifact download delete: %w", err)
 		}
 	}
 	return nil
 }
 
 // timeMinikubeStart returns the time it takes to execute `minikube start`
-func timeMinikubeStart(ctx context.Context, binary *Binary, driver string, runtime string) (*result, error) {
-	startCmd := exec.CommandContext(ctx, binary.path, "start", fmt.Sprintf("--driver=%s", driver), fmt.Sprintf("--container-runtime=%s", runtime))
+func timeMinikubeStart(ctx context.Context, binary *Binary, driver string, runtimeName string) (*result, error) {
+	startCmd := exec.CommandContext(ctx, binary.path, "start", fmt.Sprintf("--driver=%s", driver), fmt.Sprintf("--container-runtime=%s", runtimeName))
 	startCmd.Stderr = os.Stderr
 
 	r, err := timeCommandLogs(startCmd)
 	if err != nil {
-		return nil, errors.Wrapf(err, "timing cmd: %v", startCmd.Args)
+		return nil, fmt.Errorf("timing cmd: %v: %w", startCmd.Args, err)
 	}
 	return r, nil
 }
@@ -134,7 +132,7 @@ func timeEnableIngress(ctx context.Context, binary *Binary) (*result, error) {
 
 	r, err := timeCommandLogs(enableCmd)
 	if err != nil {
-		return nil, errors.Wrapf(err, "timing cmd: %v", enableCmd.Args)
+		return nil, fmt.Errorf("timing cmd: %v: %w", enableCmd.Args, err)
 	}
 	return r, nil
 }
@@ -147,6 +145,6 @@ func skipIngress(driver string) bool {
 // We only want to run the tests if:
 // 1. It's a VM driver and docker container runtime
 // 2. It's docker driver with any container runtime
-func proceed(driver string, runtime string) bool {
-	return runtime == "docker" || driver == "docker"
+func proceed(driver string, runtimeName string) bool {
+	return runtimeName == "docker" || driver == "docker"
 }

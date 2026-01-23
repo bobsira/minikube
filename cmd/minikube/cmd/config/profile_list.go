@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/minikube/cluster"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
@@ -31,32 +32,38 @@ import (
 	"k8s.io/minikube/pkg/minikube/notify"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
+	"k8s.io/minikube/pkg/libmachine"
 
 	"k8s.io/klog/v2"
 )
 
-var profileOutput string
-var isLight bool
+var (
+	profileOutput string
+	isLight       bool
+	isDetailed    bool
+)
 
 var profileListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Lists all minikube profiles.",
 	Long:  "Lists all valid minikube profiles and detects all possible invalid profiles.",
 	Run: func(_ *cobra.Command, _ []string) {
+		options := flags.CommandOptions()
 		output := strings.ToLower(profileOutput)
 		out.SetJSON(output == "json")
-		go notify.MaybePrintUpdateTextFromGithub()
+		go notify.MaybePrintUpdateTextFromGithub(options)
 
 		switch output {
 		case "json":
-			printProfilesJSON()
+			printProfilesJSON(options)
 		case "table":
-			printProfilesTable()
+			printProfilesTable(options)
 		default:
 			exit.Message(reason.Usage, fmt.Sprintf("invalid output format: %s. Valid values: 'table', 'json'", profileOutput))
 		}
@@ -73,7 +80,7 @@ func listProfiles() (validProfiles, invalidProfiles []*config.Profile, err error
 	return validProfiles, invalidProfiles, err
 }
 
-func printProfilesTable() {
+func printProfilesTable(options *run.CommandOptions) {
 	validProfiles, invalidProfiles, err := listProfiles()
 
 	if err != nil {
@@ -84,12 +91,12 @@ func printProfilesTable() {
 		exit.Message(reason.UsageNoProfileRunning, "No minikube profile was found.")
 	}
 
-	updateProfilesStatus(validProfiles)
+	updateProfilesStatus(validProfiles, options)
 	renderProfilesTable(profilesToTableData(validProfiles))
 	warnInvalidProfiles(invalidProfiles)
 }
 
-func updateProfilesStatus(profiles []*config.Profile) {
+func updateProfilesStatus(profiles []*config.Profile, options *run.CommandOptions) {
 	if isLight {
 		for _, p := range profiles {
 			p.Status = "Skipped"
@@ -97,7 +104,7 @@ func updateProfilesStatus(profiles []*config.Profile) {
 		return
 	}
 
-	api, err := machine.NewAPIClient()
+	api, err := machine.NewAPIClient(options)
 	if err != nil {
 		klog.Errorf("failed to get machine api client %v", err)
 	}
@@ -130,12 +137,22 @@ func profileStatus(p *config.Profile, api libmachine.API) cluster.State {
 
 func renderProfilesTable(ps [][]string) {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Profile", "VM Driver", "Runtime", "IP", "Port", "Version", "Status", "Nodes", "Active Profile", "Active Kubecontext"})
-	table.SetAutoFormatHeaders(false)
-	table.SetBorders(tablewriter.Border{Left: true, Top: true, Right: true, Bottom: true})
-	table.SetCenterSeparator("|")
-	table.AppendBulk(ps)
-	table.Render()
+	if isDetailed {
+		table.Header("Profile", "Driver", "Runtime", "IP", "Port", "Version",
+			"Status", "Nodes", "Active Profile", "Active Kubecontext")
+	} else {
+		table.Header("Profile", "Driver", "Runtime", "IP", "Version", "Status",
+			"Nodes", "Active Profile", "Active Kubecontext")
+	}
+	table.Options(
+		tablewriter.WithHeaderAutoFormat(tw.Off),
+	)
+	if err := table.Bulk(ps); err != nil {
+		klog.Error("Error while bulk render table: ", err)
+	}
+	if err := table.Render(); err != nil {
+		klog.Error("Error while rendering profile table: ", err)
+	}
 }
 
 func profilesToTableData(profiles []*config.Profile) [][]string {
@@ -164,7 +181,33 @@ func profilesToTableData(profiles []*config.Profile) [][]string {
 		if p.ActiveKubeContext {
 			k = "*"
 		}
-		data = append(data, []string{p.Name, p.Config.Driver, p.Config.KubernetesConfig.ContainerRuntime, cpIP, strconv.Itoa(cpPort), k8sVersion, p.Status, strconv.Itoa(len(p.Config.Nodes)), c, k})
+
+		var row []string
+		if isDetailed {
+			row = []string{p.Name, p.Config.Driver, p.Config.KubernetesConfig.ContainerRuntime,
+				cpIP, strconv.Itoa(cpPort), k8sVersion, p.Status, strconv.Itoa(len(p.Config.Nodes)), c, k}
+		} else {
+			row = []string{p.Name, p.Config.Driver, p.Config.KubernetesConfig.ContainerRuntime,
+				cpIP, k8sVersion, p.Status, strconv.Itoa(len(p.Config.Nodes)), c, k}
+		}
+
+		// Colorize row based on status
+		switch p.Status {
+		case "Running", "OK", "Configured":
+			// Green
+			for i, val := range row {
+				row[i] = style.Green + val + style.Reset
+			}
+		case "Stopped", "Paused", "Skipped":
+			// No color (default/white)
+		default:
+			// Red for everything else (Error, Misconfigured, Warning, etc)
+			for i, val := range row {
+				row[i] = style.Red + val + style.Reset
+			}
+		}
+
+		data = append(data, row)
 	}
 	return data
 }
@@ -185,9 +228,9 @@ func warnInvalidProfiles(invalidProfiles []*config.Profile) {
 	}
 }
 
-func printProfilesJSON() {
+func printProfilesJSON(options *run.CommandOptions) {
 	validProfiles, invalidProfiles, err := listProfiles()
-	updateProfilesStatus(validProfiles)
+	updateProfilesStatus(validProfiles, options)
 
 	var body = map[string]interface{}{}
 	if err == nil || config.IsNotExist(err) {
@@ -213,5 +256,6 @@ func profilesOrDefault(profiles []*config.Profile) []*config.Profile {
 func init() {
 	profileListCmd.Flags().StringVarP(&profileOutput, "output", "o", "table", "The output format. One of 'json', 'table'")
 	profileListCmd.Flags().BoolVarP(&isLight, "light", "l", false, "If true, returns list of profiles faster by skipping validating the status of the cluster.")
+	profileListCmd.Flags().BoolVarP(&isDetailed, "detailed", "d", false, "If true, returns a detailed list of profiles.")
 	ProfileCmd.AddCommand(profileListCmd)
 }

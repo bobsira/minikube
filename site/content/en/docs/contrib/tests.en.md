@@ -24,6 +24,9 @@ tests addons that require no special environment in parallel
 #### validateIngressAddon
 tests the ingress addon by deploying a default nginx pod
 
+#### validateRegistryCredsAddon
+tests the registry-creds addon by trying to load its configs
+
 #### validateRegistryAddon
 tests the registry addon
 
@@ -99,9 +102,6 @@ makes sure the MINIKUBE_FORCE_SYSTEMD environment variable works just as well as
 ## TestDockerEnvContainerd
 makes sure that minikube docker-env command works when the runtime is containerd
 
-## TestKVMDriverInstallOrUpdate
-makes sure our docker-machine-driver-kvm2 binary can be installed properly
-
 ## TestHyperKitDriverInstallOrUpdate
 makes sure our docker-machine-driver-hyperkit binary can be installed properly
 
@@ -111,8 +111,16 @@ makes sure our docker-machine-driver-hyperkit binary can be installed properly
 ## TestErrorSpam
 asserts that there are no unexpected errors displayed in minikube command outputs.
 
+## TestParseAllMounts
+
+## TestParseSingle
+
 ## TestFunctional
 are functionality tests which can safely share a profile in parallel
+
+## TestFunctionalNewestKubernetes
+are functionality run functional tests using
+NewestKubernetesVersion
 
 #### validateNodeLabels
 checks if minikube cluster is created with correct kubernetes's node label
@@ -136,7 +144,7 @@ Steps:
 
 Skips:
 - Skips on `none` driver as image loading is not supported
-- Skips on GitHub Actions and macOS as this test case requires a running docker daemon
+- Skips on GitHub Actions / prow environment and macOS as this test case requires a running docker daemon
 
 #### validateDockerEnv
 check functionality of minikube after evaluating docker-env
@@ -317,7 +325,7 @@ Steps:
 asserts basic "service" command functionality
 
 #### validateServiceCmdDeployApp
-Create a new `registry.k8s.io/echoserver` deployment
+Create a new `kickbase/echo_server` deployment
 
 #### validateServiceCmdList
 Run `minikube service list` to make sure the newly created service is correctly listed in the output
@@ -337,7 +345,7 @@ Run `minikube service` with a regular `--url` to make sure the HTTP endpoint URL
 #### validateServiceCmdConnect
 
 Steps:
-- Create a new `registry.k8s.io/echoserver` deployment
+- Create a new `kickbase/echo-server` deployment
 - Run `minikube service` with a regular `--url` to make sure the HTTP endpoint URL of the service is printed
 - Make sure we can hit the endpoint URL with an HTTP GET request
 
@@ -432,6 +440,11 @@ for the platforms that support it, we're testing:
 
 #### validatePersistentVolumeClaim
 makes sure PVCs work properly
+verifies at least one StorageClass exists
+Applies a PVC manifest (pvc.yaml) and verfies PVC named myclaim reaches phase Bound.
+Creates a test pod (sp-pod) that mounts the claim (via createPVTestPod).
+Writes a file foo to the mounted volume at /tmp/mount/foo.
+Deletes the pod, recreates it, and verifies the file foo still exists by listing /tmp/mount, proving data persists across pod restarts.
 
 #### validateTunnelCmd
 makes sure the minikube tunnel command works as expected
@@ -463,9 +476,6 @@ NOTE: DNS forwarding is experimental: https://minikube.sigs.k8s.io/docs/handbook
 #### validateTunnelDelete
 stops `minikube tunnel`
 
-## TestGuestEnvironment
-verifies files and packages installed inside minikube ISO/Base image
-
 ## TestGvisorAddon
 tests the functionality of the gVisor addon
 
@@ -479,7 +489,7 @@ ensures ha (multi-control plane) cluster can start.
 deploys an app to ha (multi-control plane) cluster and ensures all nodes can serve traffic.
 
 #### validateHAPingHostFromPods
-uses app previously deplyed by validateDeployAppToHACluster to verify its pods, located on different nodes, can resolve "host.minikube.internal".
+uses app previously deployed by validateDeployAppToHACluster to verify its pods, located on different nodes, can resolve "host.minikube.internal".
 
 #### validateHAAddWorkerNode
 uses the minikube node add command to add a worker node to an existing ha (multi-control plane) cluster.
@@ -542,6 +552,9 @@ is a test case building with --build-env
 
 #### validateImageBuildWithDockerIgnore
 is a test case building with .dockerignore
+
+## TestISOImage
+verifies files and packages installed inside minikube ISO/Base image
 
 ## TestJSONOutput
 makes sure json output works properly for the start, pause, unpause, and stop commands
@@ -634,7 +647,7 @@ tests that the node name verification works as expected
 deploys an app to a multinode cluster and makes sure all nodes can serve traffic
 
 #### validatePodsPingHost
-uses app previously deplyed by validateDeployAppToMultiNode to verify its pods, located on different nodes, can resolve "host.minikube.internal".
+uses app previously deployed by validateDeployAppToMultiNode to verify its pods, located on different nodes, can resolve "host.minikube.internal".
 
 ## TestNetworkPlugins
 tests all supported CNI options
@@ -723,7 +736,9 @@ makes sure no left over left after deleting a profile such as containers or volu
 makes sure paused clusters show up in minikube status correctly
 
 ## TestPreload
-verifies the preload tarballs get pulled in properly by minikube
+verifies that disabling the initial preload, pulling a specific image,
+and restarting the cluster preserves the image across restarts.
+also tests --preload-source should work for both github and gcs
 
 ## TestScheduledStopWindows
 tests the schedule stop functionality on Windows

@@ -30,8 +30,8 @@ import (
 	"testing"
 
 	"github.com/blang/semver/v4"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/images"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/detect"
@@ -106,7 +106,7 @@ func TestStartStop(t *testing.T) {
 					waitFlag = "--wait=apiserver,system_pods,default_sa"
 				}
 
-				startArgs := append([]string{"start", "-p", profile, "--memory=2200", "--alsologtostderr", waitFlag}, tc.args...)
+				startArgs := append([]string{"start", "-p", profile, "--memory=3072", "--alsologtostderr", waitFlag}, tc.args...)
 				startArgs = append(startArgs, StartArgs()...)
 				startArgs = append(startArgs, fmt.Sprintf("--kubernetes-version=%s", tc.version))
 

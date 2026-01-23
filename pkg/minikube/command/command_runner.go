@@ -28,7 +28,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
+
 	"k8s.io/minikube/pkg/minikube/assets"
 )
 
@@ -61,12 +62,12 @@ type StartedCmd struct {
 // Runner represents an interface to run commands.
 type Runner interface {
 	// RunCmd runs a cmd of exec.Cmd type. allowing user to set cmd.Stdin, cmd.Stdout,...
-	// not all implementors are guaranteed to handle all the properties of cmd.
+	// not all implementers are guaranteed to handle all the properties of cmd.
 	RunCmd(cmd *exec.Cmd) (*RunResult, error)
 
 	// StartCmd starts a cmd of exec.Cmd type.
 	// This func in non-blocking, use WaitCmd to block until complete.
-	// Not all implementors are guaranteed to handle all the properties of cmd.
+	// Not all implementers are guaranteed to handle all the properties of cmd.
 	StartCmd(cmd *exec.Cmd) (*StartedCmd, error)
 
 	// WaitCmd will prevent further execution until the started command has completed.
@@ -196,14 +197,14 @@ func fileExists(r Runner, f assets.CopyableFile, dst string) (bool, error) {
 func writeFile(dst string, f assets.CopyableFile, perms os.FileMode) error {
 	w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE, perms)
 	if err != nil {
-		return errors.Wrap(err, "create")
+		return fmt.Errorf("create: %w", err)
 	}
 	defer w.Close()
 
 	r := f.(io.Reader)
 	n, err := io.Copy(w, r)
 	if err != nil {
-		return errors.Wrap(err, "copy")
+		return fmt.Errorf("copy: %w", err)
 	}
 
 	if n != int64(f.GetLength()) {
@@ -211,7 +212,7 @@ func writeFile(dst string, f assets.CopyableFile, perms os.FileMode) error {
 	}
 
 	if err := w.Chmod(perms); err != nil {
-		return errors.Wrap(err, "chmod")
+		return fmt.Errorf("chmod: %w", err)
 	}
 
 	return w.Close()

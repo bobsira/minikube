@@ -5,6 +5,7 @@
 
 # Folders
 .cache
+.modcache
 _obj
 _test
 
@@ -26,6 +27,7 @@ _testmain.go
 *.test
 *.prof
 *.pprof
+*.log
 
 /deploy/iso/minikube-iso/board/minikube/x86_64/rootfs-overlay/usr/bin/auto-pause
 /deploy/iso/minikube-iso/board/minikube/aarch64/rootfs-overlay/usr/bin/auto-pause
@@ -49,18 +51,22 @@ deploy/iso/minikube-iso/board/minikube/aarch64/rootfs-overlay/version.json
 
 .DS_Store
 
+# Editor files
 /.idea
-
 /.vscode
+/.zed
 
-test/integration/testdata/minikube-linux-amd64-latest-stable
+/test/integration/testdata/minikube-linux-amd64-latest-stable
+/test/integration/licenses
 
 # hugo
 /public
 /site/resources
 /_gen
+/site/public
 
 # gopogh filldb
 hack/legacy_fill_db/gopogh_filldb_log.txt
 hack/legacy_fill_db/out/output_summary.json
 hack/legacy_fill_db/out/output.html
+hack/go-licenses

@@ -19,13 +19,16 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/exit"
@@ -53,9 +56,10 @@ var addonsListCmd = &cobra.Command{
 			exit.Message(reason.Usage, "usage: minikube addons list")
 		}
 
+		options := flags.CommandOptions()
 		var cc *config.ClusterConfig
 		if config.ProfileExists(ClusterFlagValue()) {
-			_, cc = mustload.Partial(ClusterFlagValue())
+			_, cc = mustload.Partial(ClusterFlagValue(), options)
 		}
 		switch strings.ToLower(addonListOutput) {
 		case "list":
@@ -89,16 +93,12 @@ var stringFromStatus = func(addonStatus bool) string {
 }
 
 var printAddonsList = func(cc *config.ClusterConfig, printDocs bool) {
-	addonNames := make([]string, 0, len(assets.Addons))
-	for addonName := range assets.Addons {
-		addonNames = append(addonNames, addonName)
-	}
-	sort.Strings(addonNames)
-
+	addonNames := slices.Sorted(maps.Keys(assets.Addons))
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetAutoFormatHeaders(true)
-	table.SetBorders(tablewriter.Border{Left: true, Top: true, Right: true, Bottom: true})
-	table.SetCenterSeparator("|")
+
+	table.Options(
+		tablewriter.WithHeaderAutoFormat(tw.On),
+	)
 
 	// Create table header
 	var tHeader []string
@@ -110,11 +110,9 @@ var printAddonsList = func(cc *config.ClusterConfig, printDocs bool) {
 	if printDocs {
 		tHeader = append(tHeader, "Docs")
 	}
-	table.SetHeader(tHeader)
+	table.Header(tHeader)
 
 	// Create table data
-	var tData [][]string
-	var temp []string
 	for _, addonName := range addonNames {
 		addonBundle := assets.Addons[addonName]
 		maintainer := addonBundle.Maintainer
@@ -125,21 +123,36 @@ var printAddonsList = func(cc *config.ClusterConfig, printDocs bool) {
 		if docs == "" {
 			docs = "n/a"
 		}
+
+		enabled := false
+		if cc != nil {
+			enabled = addonBundle.IsEnabled(cc)
+		}
+
+		// Prepare row data
+		var row []string
 		if cc == nil {
-			temp = []string{addonName, maintainer}
+			row = []string{addonName, maintainer}
 		} else {
-			enabled := addonBundle.IsEnabled(cc)
-			temp = []string{addonName, cc.Name, fmt.Sprintf("%s %s", stringFromStatus(enabled), iconFromStatus(enabled)), maintainer}
+			row = []string{addonName, cc.Name, fmt.Sprintf("%s %s", stringFromStatus(enabled), iconFromStatus(enabled)), maintainer}
 		}
+
 		if printDocs {
-			temp = append(temp, docs)
+			row = append(row, docs)
 		}
-		tData = append(tData, temp)
+
+		// Apply green color if enabled
+		if enabled {
+			for i, val := range row {
+				row[i] = style.Green + val + style.Reset
+			}
+		}
+
+		table.Append(row)
 	}
-	table.AppendBulk(tData)
-
-	table.Render()
-
+	if err := table.Render(); err != nil {
+		klog.Error("Error rendering table", err)
+	}
 	v, _, err := config.ListProfiles()
 	if err != nil {
 		klog.Errorf("list profiles returned error: %v", err)
@@ -150,12 +163,7 @@ var printAddonsList = func(cc *config.ClusterConfig, printDocs bool) {
 }
 
 var printAddonsJSON = func(cc *config.ClusterConfig) {
-	addonNames := make([]string, 0, len(assets.Addons))
-	for addonName := range assets.Addons {
-		addonNames = append(addonNames, addonName)
-	}
-	sort.Strings(addonNames)
-
+	addonNames := slices.Sorted(maps.Keys(assets.Addons))
 	addonsMap := map[string]map[string]interface{}{}
 
 	for _, addonName := range addonNames {

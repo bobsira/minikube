@@ -22,7 +22,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/pkg/errors"
+	"errors"
 
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,14 +57,14 @@ var _ controller.Provisioner = &hostPathProvisioner{}
 
 // Provision creates a storage asset and returns a PV object representing it.
 func (p *hostPathProvisioner) Provision(_ context.Context, options controller.ProvisionOptions) (*core.PersistentVolume, controller.ProvisioningState, error) {
-	path := path.Join(p.pvDir, options.PVC.Namespace, options.PVC.Name)
-	klog.Infof("Provisioning volume %v to %s", options, path)
-	if err := os.MkdirAll(path, 0777); err != nil {
+	hostPath := path.Join(p.pvDir, options.PVC.Namespace, options.PVC.Name)
+	klog.Infof("Provisioning volume %v to %s", options, hostPath)
+	if err := os.MkdirAll(hostPath, 0777); err != nil {
 		return nil, controller.ProvisioningFinished, err
 	}
 
 	// Explicitly chmod created dir, so we know mode is set to 0777 regardless of umask
-	if err := os.Chmod(path, 0777); err != nil {
+	if err := os.Chmod(hostPath, 0777); err != nil {
 		return nil, controller.ProvisioningFinished, err
 	}
 
@@ -83,7 +83,7 @@ func (p *hostPathProvisioner) Provision(_ context.Context, options controller.Pr
 			},
 			PersistentVolumeSource: core.PersistentVolumeSource{
 				HostPath: &core.HostPathVolumeSource{
-					Path: path,
+					Path: hostPath,
 				},
 			},
 		},
@@ -104,8 +104,8 @@ func (p *hostPathProvisioner) Delete(_ context.Context, volume *core.PersistentV
 		return &controller.IgnoredError{Reason: "identity annotation on PV does not match ours"}
 	}
 
-	if err := os.RemoveAll(volume.Spec.PersistentVolumeSource.HostPath.Path); err != nil {
-		return errors.Wrap(err, "removing hostpath PV")
+	if err := os.RemoveAll(volume.Spec.HostPath.Path); err != nil {
+		return fmt.Errorf("removing hostpath PV: %w", err)
 	}
 
 	return nil

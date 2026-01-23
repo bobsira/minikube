@@ -18,10 +18,10 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/out"
@@ -155,14 +155,14 @@ func GenerateBashCompletion(w io.Writer, cmd *cobra.Command) error {
 
 	err = cmd.GenBashCompletion(w)
 	if err != nil {
-		return errors.Wrap(err, "Error generating bash completion")
+		return fmt.Errorf("Error generating bash completion: %w", err)
 	}
 
 	return nil
 }
 
 // GenerateZshCompletion generates the completion for the zsh shell
-func GenerateZshCompletion(out io.Writer, cmd *cobra.Command) error {
+func GenerateZshCompletion(w io.Writer, cmd *cobra.Command) error {
 	zshAutoloadTag := `#compdef minikube
 `
 
@@ -300,17 +300,17 @@ __minikube_convert_bash_to_zsh() {
 	<<'BASH_COMPLETION_EOF'
 `
 
-	_, err := out.Write([]byte(zshAutoloadTag))
+	_, err := w.Write([]byte(zshAutoloadTag))
 	if err != nil {
 		return err
 	}
 
-	_, err = out.Write([]byte(boilerPlate))
+	_, err = w.Write([]byte(boilerPlate))
 	if err != nil {
 		return err
 	}
 
-	_, err = out.Write([]byte(zshInitialization))
+	_, err = w.Write([]byte(zshInitialization))
 	if err != nil {
 		return err
 	}
@@ -318,9 +318,9 @@ __minikube_convert_bash_to_zsh() {
 	buf := new(bytes.Buffer)
 	err = cmd.GenBashCompletion(buf)
 	if err != nil {
-		return errors.Wrap(err, "Error generating zsh completion")
+		return fmt.Errorf("Error generating zsh completion: %w", err)
 	}
-	_, err = out.Write(buf.Bytes())
+	_, err = w.Write(buf.Bytes())
 	if err != nil {
 		return err
 	}
@@ -330,7 +330,7 @@ BASH_COMPLETION_EOF
 }
 __minikube_bash_source <(__minikube_convert_bash_to_zsh)
 `
-	_, err = out.Write([]byte(zshTail))
+	_, err = w.Write([]byte(zshTail))
 	if err != nil {
 		return err
 	}
@@ -347,7 +347,7 @@ func GenerateFishCompletion(w io.Writer, cmd *cobra.Command) error {
 
 	err = cmd.GenFishCompletion(w, true)
 	if err != nil {
-		return errors.Wrap(err, "Error generating fish completion")
+		return fmt.Errorf("Error generating fish completion: %w", err)
 	}
 
 	return nil
@@ -362,7 +362,7 @@ func GeneratePowerShellCompletion(w io.Writer, cmd *cobra.Command) error {
 
 	err = cmd.GenPowerShellCompletionWithDesc(w)
 	if err != nil {
-		return errors.Wrap(err, "Error generating powershell completion")
+		return fmt.Errorf("Error generating powershell completion: %w", err)
 	}
 
 	return nil

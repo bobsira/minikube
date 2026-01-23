@@ -28,34 +28,36 @@ import (
 	"os/user"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/Delta456/box-cli-maker/v2"
 	"github.com/blang/semver/v4"
 	"github.com/docker/go-connections/nat"
-	"github.com/docker/machine/libmachine/ssh"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/pkg/errors"
-	"github.com/shirou/gopsutil/v3/cpu"
-	gopshost "github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v4/cpu"
+	gopshost "github.com/shirou/gopsutil/v4/host"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
-	"k8s.io/minikube/pkg/minikube/command"
-	"k8s.io/minikube/pkg/minikube/firewall"
-	netutil "k8s.io/minikube/pkg/network"
-
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine/ssh"
+
 	cmdcfg "k8s.io/minikube/cmd/minikube/cmd/config"
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil"
+	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil/kverify"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/images"
+	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/cruntime"
@@ -64,6 +66,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/driver/auxdriver"
 	"k8s.io/minikube/pkg/minikube/exit"
+	"k8s.io/minikube/pkg/minikube/firewall"
 	"k8s.io/minikube/pkg/minikube/kubeconfig"
 	"k8s.io/minikube/pkg/minikube/localpath"
 	"k8s.io/minikube/pkg/minikube/machine"
@@ -74,13 +77,15 @@ import (
 	"k8s.io/minikube/pkg/minikube/out/register"
 	"k8s.io/minikube/pkg/minikube/pause"
 	"k8s.io/minikube/pkg/minikube/reason"
-	"k8s.io/minikube/pkg/minikube/style"
-	pkgtrace "k8s.io/minikube/pkg/trace"
-
 	"k8s.io/minikube/pkg/minikube/registry"
+	"k8s.io/minikube/pkg/minikube/run"
+	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/minikube/translate"
+	netutil "k8s.io/minikube/pkg/network"
+	pkgtrace "k8s.io/minikube/pkg/trace"
 	"k8s.io/minikube/pkg/util"
 	"k8s.io/minikube/pkg/version"
+	kconst "k8s.io/minikube/third_party/kubeadm/app/constants"
 )
 
 type versionJSON struct {
@@ -152,6 +157,8 @@ func platform() string {
 
 // runStart handles the executes the flow of "minikube start"
 func runStart(cmd *cobra.Command, _ []string) {
+	options := flags.CommandOptions()
+
 	register.SetEventLogPath(localpath.EventLog(ClusterFlagValue()))
 	ctx := context.Background()
 	out.SetJSON(outputFormat == "json")
@@ -164,7 +171,7 @@ func runStart(cmd *cobra.Command, _ []string) {
 	go download.CleanUpOlderPreloads()
 
 	// Avoid blocking execution on optional HTTP fetches
-	go notify.MaybePrintUpdateTextFromGithub()
+	go notify.MaybePrintUpdateTextFromGithub(options)
 
 	displayEnviron(os.Environ())
 	if viper.GetBool(force) {
@@ -201,11 +208,11 @@ func runStart(cmd *cobra.Command, _ []string) {
 		validateProfileName()
 	}
 
-	validateSpecifiedDriver(existing)
+	validateSpecifiedDriver(existing, options)
 	validateKubernetesVersion(existing)
 	validateContainerRuntime(existing)
 
-	ds, alts, specified := selectDriver(existing)
+	ds, alts, specified := selectDriver(existing, options)
 	if cmd.Flag(kicBaseImage).Changed {
 		if !isBaseImageApplicable(ds.Name) {
 			exit.Message(reason.Usage,
@@ -224,7 +231,7 @@ func runStart(cmd *cobra.Command, _ []string) {
 
 	useForce := viper.GetBool(force)
 
-	starter, err := provisionWithDriver(cmd, ds, existing)
+	starter, err := provisionWithDriver(cmd, ds, existing, options)
 	if err != nil {
 		node.ExitIfFatal(err, useForce)
 		machine.MaybeDisplayAdvice(err, ds.Name)
@@ -247,11 +254,11 @@ func runStart(cmd *cobra.Command, _ []string) {
 					klog.Warningf("%s profile does not exist, trying anyways.", ClusterFlagValue())
 				}
 
-				err = deleteProfile(ctx, profile)
+				err = deleteProfile(ctx, profile, options)
 				if err != nil {
 					out.WarningT("Failed to delete cluster {{.name}}, proceeding with retry anyway.", out.V{"name": ClusterFlagValue()})
 				}
-				starter, err = provisionWithDriver(cmd, ds, existing)
+				starter, err = provisionWithDriver(cmd, ds, existing, options)
 				if err != nil {
 					continue
 				}
@@ -267,7 +274,7 @@ func runStart(cmd *cobra.Command, _ []string) {
 
 	validateBuiltImageVersion(starter.Runner, ds.Name)
 
-	if existing != nil && driver.IsKIC(existing.Driver) && viper.GetBool(createMount) {
+	if existing != nil && driver.IsKIC(existing.Driver) && viper.GetString(mountString) != "" {
 		old := ""
 		if len(existing.ContainerVolumeMounts) > 0 {
 			old = existing.ContainerVolumeMounts[0]
@@ -281,18 +288,24 @@ func runStart(cmd *cobra.Command, _ []string) {
 		}
 	}
 
-	kubeconfig, err := startWithDriver(cmd, starter, existing)
+	configInfo, err := startWithDriver(cmd, starter, existing, options)
 	if err != nil {
 		node.ExitIfFatal(err, useForce)
 		exit.Error(reason.GuestStart, "failed to start node", err)
 	}
 
-	if err := showKubectlInfo(kubeconfig, starter.Node.KubernetesVersion, starter.Node.ContainerRuntime, starter.Cfg.Name); err != nil {
+	if starter.Cfg.VerifyComponents[kverify.ExtraKey] {
+		if err := kverify.WaitExtra(ClusterFlagValue(), kverify.CorePodsLabels, kconst.DefaultControlPlaneTimeout); err != nil {
+			exit.Message(reason.GuestStart, "extra waiting: {{.error}}", out.V{"error": err})
+		}
+	}
+
+	if err := showKubectlInfo(configInfo, starter.Node.KubernetesVersion, starter.Node.ContainerRuntime, starter.Cfg.Name); err != nil {
 		klog.Errorf("kubectl info: %v", err)
 	}
 }
 
-func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *config.ClusterConfig) (node.Starter, error) {
+func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *config.ClusterConfig, options *run.CommandOptions) (node.Starter, error) {
 	driverName := ds.Name
 	klog.Infof("selected driver: %s", driverName)
 	validateDriver(ds, existing)
@@ -302,6 +315,7 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 	}
 
 	virtualBoxMacOS13PlusWarning(driverName)
+	hyperkitDeprecationWarning(driverName)
 	validateFlags(cmd, driverName)
 	validateUser(driverName)
 	if driverName == oci.Docker {
@@ -333,14 +347,17 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 	}
 
 	rtime := getContainerRuntime(existing)
-	cc, n, err := generateClusterConfig(cmd, existing, k8sVersion, rtime, driverName)
+	if rtime == constants.Docker && (existing == nil || viper.IsSet(containerRuntime)) {
+		out.WarningT(`Starting v1.39.0, minikube will default to "containerd" container runtime. See #21973 for more info.`)
+	}
+	cc, n, err := generateClusterConfig(cmd, existing, k8sVersion, rtime, driverName, options)
 	if err != nil {
-		return node.Starter{}, errors.Wrap(err, "Failed to generate cluster config")
+		return node.Starter{}, fmt.Errorf("Failed to generate cluster config: %w", err)
 	}
 	klog.Infof("cluster config:\n%+v", cc)
 
 	if firewall.IsBootpdBlocked(cc) {
-		if err := firewall.UnblockBootpd(); err != nil {
+		if err := firewall.UnblockBootpd(options); err != nil {
 			klog.Warningf("failed unblocking bootpd from firewall: %v", err)
 		}
 	}
@@ -356,11 +373,11 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 	}
 
 	if driver.IsVM(driverName) && !driver.IsSSH(driverName) {
-		url, err := download.ISO(viper.GetStringSlice(isoURL), cmd.Flags().Changed(isoURL))
+		urlString, err := download.ISO(viper.GetStringSlice(isoURL), cmd.Flags().Changed(isoURL))
 		if err != nil {
-			return node.Starter{}, errors.Wrap(err, "Failed to cache ISO")
+			return node.Starter{}, fmt.Errorf("Failed to cache ISO: %w", err)
 		}
-		cc.MinikubeISO = url
+		cc.MinikubeISO = urlString
 	}
 
 	var existingAddons map[string]bool
@@ -377,7 +394,7 @@ func provisionWithDriver(cmd *cobra.Command, ds registry.DriverState, existing *
 		ssh.SetDefaultClient(ssh.External)
 	}
 
-	mRunner, preExists, mAPI, host, err := node.Provision(&cc, &n, viper.GetBool(deleteOnFailure))
+	mRunner, preExists, mAPI, host, err := node.Provision(&cc, &n, viper.GetBool(deleteOnFailure), options)
 	if err != nil {
 		return node.Starter{}, err
 	}
@@ -398,16 +415,25 @@ func virtualBoxMacOS13PlusWarning(driverName string) {
 	if !driver.IsVirtualBox(driverName) || !detect.MacOS13Plus() {
 		return
 	}
-	suggestedDriver := driver.HyperKit
-	if runtime.GOARCH == "arm64" {
-		suggestedDriver = driver.QEMU
-	}
-	out.WarningT(`Due to changes in macOS 13+ minikube doesn't currently support VirtualBox. You can use alternative drivers such as docker or {{.driver}}.
+	out.WarningT(`Due to changes in macOS 13+ minikube doesn't currently support VirtualBox. You can use alternative drivers such as 'vfkit', 'qemu', or 'docker'.
+    https://minikube.sigs.k8s.io/docs/drivers/vfkit/
+    https://minikube.sigs.k8s.io/docs/drivers/qemu/
     https://minikube.sigs.k8s.io/docs/drivers/docker/
-    https://minikube.sigs.k8s.io/docs/drivers/{{.driver}}/
-
     For more details on the issue see: https://github.com/kubernetes/minikube/issues/15274
-`, out.V{"driver": suggestedDriver})
+`)
+}
+
+// hyperkitDeprecationWarning prints a deprecation warning for the hyperkit driver
+func hyperkitDeprecationWarning(driverName string) {
+	if !driver.IsHyperKit(driverName) {
+		return
+	}
+	out.WarningT(`The 'hyperkit' driver is deprecated and will be removed in a future release.
+    You can use alternative drivers such as 'vfkit', 'qemu', or 'docker'.
+    https://minikube.sigs.k8s.io/docs/drivers/vfkit/
+    https://minikube.sigs.k8s.io/docs/drivers/qemu/
+    https://minikube.sigs.k8s.io/docs/drivers/docker/
+	`)
 }
 
 func validateBuiltImageVersion(r command.Runner, driverName string) {
@@ -453,11 +479,11 @@ func imageMatchesBinaryVersion(imageVersion, binaryVersion string) bool {
 	return ok && binaryVersion == imageVersion
 }
 
-func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.ClusterConfig) (*kubeconfig.Settings, error) {
+func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.ClusterConfig, options *run.CommandOptions) (*kubeconfig.Settings, error) {
 	// start primary control-plane node
-	kubeconfig, err := node.Start(starter)
+	configInfo, err := node.Start(starter, options)
 	if err != nil {
-		kubeconfig, err = maybeDeleteAndRetry(cmd, *starter.Cfg, *starter.Node, starter.ExistingAddons, err)
+		configInfo, err = maybeDeleteAndRetry(cmd, *starter.Cfg, *starter.Node, starter.ExistingAddons, err, options)
 		if err != nil {
 			return nil, err
 		}
@@ -498,14 +524,14 @@ func startWithDriver(cmd *cobra.Command, starter node.Starter, existing *config.
 		}
 
 		out.Ln("") // extra newline for clarity on the command line
-		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure)); err != nil {
-			return nil, errors.Wrap(err, "adding node")
+		if err := node.Add(starter.Cfg, n, viper.GetBool(deleteOnFailure), options); err != nil {
+			return nil, fmt.Errorf("adding node: %w", err)
 		}
 	}
 
 	pause.RemovePausedFile(starter.Runner)
 
-	return kubeconfig, nil
+	return configInfo, nil
 }
 
 func warnAboutMultiNodeCNI() {
@@ -513,22 +539,25 @@ func warnAboutMultiNodeCNI() {
 }
 
 func updateDriver(driverName string) {
-	v, err := version.GetSemverVersion()
-	if err != nil {
-		out.WarningT("Error parsing minikube version: {{.error}}", out.V{"error": err})
-	} else if err := auxdriver.InstallOrUpdate(driverName, localpath.MakeMiniPath("bin"), v, viper.GetBool(interactive), viper.GetBool(autoUpdate)); err != nil {
+	if err := auxdriver.InstallOrUpdate(driverName, localpath.MakeMiniPath("bin"), viper.GetBool(flags.Interactive), viper.GetBool(autoUpdate)); err != nil {
+		if errors.Is(err, auxdriver.ErrAuxDriverVersionCommandFailed) {
+			exit.Error(reason.DrvAuxNotHealthy, "Aux driver "+driverName, err)
+		}
+		if errors.Is(err, auxdriver.ErrAuxDriverVersionNotinPath) {
+			exit.Error(reason.DrvAuxNotHealthy, "Aux driver"+driverName, err)
+		} // if failed to update but not a fatal error, log it and continue (old version might still work)
 		out.WarningT("Unable to update {{.driver}} driver: {{.error}}", out.V{"driver": driverName, "error": err})
 	}
 }
 
-func displayVersion(version string) {
+func displayVersion(ver string) {
 	prefix := ""
 	if ClusterFlagValue() != constants.DefaultClusterName {
 		prefix = fmt.Sprintf("[%s] ", ClusterFlagValue())
 	}
 
 	register.Reg.SetStep(register.InitialSetup)
-	out.Step(style.Happy, "{{.prefix}}minikube {{.version}} on {{.platform}}", out.V{"prefix": prefix, "version": version, "platform": platform()})
+	out.Step(style.Happy, "{{.prefix}}minikube {{.version}} on {{.platform}}", out.V{"prefix": prefix, "version": ver, "platform": platform()})
 }
 
 // displayEnviron makes the user aware of environment variables that will affect how minikube operates
@@ -592,7 +621,7 @@ func showKubectlInfo(kcs *kubeconfig.Settings, k8sVersion, rtime, machineName st
 
 	client, err := semver.Make(strings.TrimPrefix(gitVersion, version.VersionPrefix))
 	if err != nil {
-		return errors.Wrap(err, "client semver")
+		return fmt.Errorf("client semver: %w", err)
 	}
 
 	cluster := semver.MustParse(strings.TrimPrefix(k8sVersion, version.VersionPrefix))
@@ -608,7 +637,7 @@ func showKubectlInfo(kcs *kubeconfig.Settings, k8sVersion, rtime, machineName st
 	return nil
 }
 
-func maybeDeleteAndRetry(cmd *cobra.Command, existing config.ClusterConfig, n config.Node, existingAddons map[string]bool, originalErr error) (*kubeconfig.Settings, error) {
+func maybeDeleteAndRetry(cmd *cobra.Command, existing config.ClusterConfig, n config.Node, existingAddons map[string]bool, originalErr error, options *run.CommandOptions) (*kubeconfig.Settings, error) {
 	if viper.GetBool(deleteOnFailure) {
 		out.WarningT("Node {{.name}} failed to start, deleting and trying again.", out.V{"name": n.Name})
 		// Start failed, delete the cluster and try again
@@ -617,16 +646,17 @@ func maybeDeleteAndRetry(cmd *cobra.Command, existing config.ClusterConfig, n co
 			out.ErrT(style.Meh, `"{{.name}}" profile does not exist, trying anyways.`, out.V{"name": existing.Name})
 		}
 
-		err = deleteProfile(context.Background(), profile)
+		err = deleteProfile(context.Background(), profile, options)
 		if err != nil {
 			out.WarningT("Failed to delete cluster {{.name}}, proceeding with retry anyway.", out.V{"name": existing.Name})
 		}
 
 		// Re-generate the cluster config, just in case the failure was related to an old config format
 		cc := updateExistingConfigFromFlags(cmd, &existing)
-		var kubeconfig *kubeconfig.Settings
+		var configInfo *kubeconfig.Settings
+
 		for _, n := range cc.Nodes {
-			r, p, m, h, err := node.Provision(&cc, &n, false)
+			r, p, m, h, err := node.Provision(&cc, &n, false, options)
 			s := node.Starter{
 				Runner:         r,
 				PreExists:      p,
@@ -641,16 +671,16 @@ func maybeDeleteAndRetry(cmd *cobra.Command, existing config.ClusterConfig, n co
 				return nil, err
 			}
 
-			k, err := node.Start(s)
+			k, err := node.Start(s, options)
 			if n.ControlPlane {
-				kubeconfig = k
+				configInfo = k
 			}
 			if err != nil {
 				// Ok we failed again, let's bail
 				return nil, err
 			}
 		}
-		return kubeconfig, nil
+		return configInfo, nil
 	}
 	// Don't delete the cluster unless they ask
 	return nil, originalErr
@@ -662,7 +692,7 @@ func kubectlVersion(path string) (string, error) {
 		// really old Kubernetes clients did not have the --output parameter
 		b, err := exec.Command(path, "version", "--client", "--short").Output()
 		if err != nil {
-			return "", errors.Wrap(err, "exec")
+			return "", fmt.Errorf("exec: %w", err)
 		}
 		s := strings.TrimSpace(string(b))
 		return strings.Replace(s, "Client Version: ", "", 1), nil
@@ -675,21 +705,21 @@ func kubectlVersion(path string) (string, error) {
 	}{}
 	err = json.Unmarshal(j, &cv)
 	if err != nil {
-		return "", errors.Wrap(err, "unmarshal")
+		return "", fmt.Errorf("unmarshal: %w", err)
 	}
 
 	return cv.ClientVersion.GitVersion, nil
 }
 
 // returns (current_driver, suggested_drivers, "true, if the driver is set by command line arg or in the config file")
-func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []registry.DriverState, bool) {
+func selectDriver(existing *config.ClusterConfig, options *run.CommandOptions) (registry.DriverState, []registry.DriverState, bool) {
 	// Technically unrelated, but important to perform before detection
 	driver.SetLibvirtURI(viper.GetString(kvmQemuURI))
 	register.Reg.SetStep(register.SelectingDriver)
 	// By default, the driver is whatever we used last time
 	if existing != nil {
-		old := hostDriver(existing)
-		ds := driver.Status(old)
+		old := hostDriver(existing, options)
+		ds := driver.Status(old, options)
 		out.Step(style.Sparkle, `Using the {{.driver}} driver based on existing profile`, out.V{"driver": ds.String()})
 		return ds, nil, true
 	}
@@ -706,7 +736,7 @@ func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []regis
 			`
 			out.WarningT(warning, out.V{"driver": d, "vmd": vmd})
 		}
-		ds := driver.Status(d)
+		ds := driver.Status(d, options)
 		if ds.Name == "" {
 			exit.Message(reason.DrvUnsupportedOS, "The driver '{{.driver}}' is not supported on {{.os}}/{{.arch}}", out.V{"driver": d, "os": runtime.GOOS, "arch": runtime.GOARCH})
 		}
@@ -716,7 +746,7 @@ func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []regis
 
 	// Fallback to old driver parameter
 	if d := viper.GetString("vm-driver"); d != "" {
-		ds := driver.Status(viper.GetString("vm-driver"))
+		ds := driver.Status(viper.GetString("vm-driver"), options)
 		if ds.Name == "" {
 			exit.Message(reason.DrvUnsupportedOS, "The driver '{{.driver}}' is not supported on {{.os}}/{{.arch}}", out.V{"driver": d, "os": runtime.GOOS, "arch": runtime.GOARCH})
 		}
@@ -724,7 +754,7 @@ func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []regis
 		return ds, nil, true
 	}
 
-	choices := driver.Choices(viper.GetBool("vm"))
+	choices := driver.Choices(viper.GetBool("vm"), options)
 	pick, alts, rejects := driver.Suggest(choices)
 	if pick.Name == "" {
 		out.Step(style.ThumbsDown, "Unable to pick a default driver. Here is what was considered, in preference order:")
@@ -767,11 +797,12 @@ func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []regis
 				break
 			}
 		}
-		if foundStoppedDocker {
+		switch {
+		case foundStoppedDocker:
 			exit.Message(reason.DrvDockerNotRunning, "Found docker, but the docker service isn't running. Try restarting the docker service.")
-		} else if foundUnhealthy {
+		case foundUnhealthy:
 			exit.Message(reason.DrvNotHealthy, "Found driver(s) but none were healthy. See above for suggestions how to fix installed drivers.")
-		} else {
+		default:
 			exit.Message(reason.DrvNotDetected, "No possible driver was detected. Try specifying --driver, or see https://minikube.sigs.k8s.io/docs/start/")
 		}
 	}
@@ -789,12 +820,12 @@ func selectDriver(existing *config.ClusterConfig) (registry.DriverState, []regis
 }
 
 // hostDriver returns the actual driver used by a libmachine host, which can differ from our config
-func hostDriver(existing *config.ClusterConfig) string {
+func hostDriver(existing *config.ClusterConfig, options *run.CommandOptions) string {
 	if existing == nil {
 		return ""
 	}
 
-	api, err := machine.NewAPIClient()
+	api, err := machine.NewAPIClient(options)
 	if err != nil {
 		klog.Warningf("selectDriver NewAPIClient: %v", err)
 		return existing.Driver
@@ -837,7 +868,7 @@ func validateProfileName() {
 
 // validateSpecifiedDriver makes sure that if a user has passed in a driver
 // it matches the existing cluster if there is one
-func validateSpecifiedDriver(existing *config.ClusterConfig) {
+func validateSpecifiedDriver(existing *config.ClusterConfig, options *run.CommandOptions) {
 	if existing == nil {
 		return
 	}
@@ -854,7 +885,7 @@ func validateSpecifiedDriver(existing *config.ClusterConfig) {
 		return
 	}
 
-	old := hostDriver(existing)
+	old := hostDriver(existing, options)
 	if requested == old {
 		return
 	}
@@ -873,7 +904,7 @@ func validateSpecifiedDriver(existing *config.ClusterConfig) {
 			out.ErrT(style.Meh, `"{{.name}}" profile does not exist, trying anyways.`, out.V{"name": existing.Name})
 		}
 
-		err = deleteProfile(context.Background(), profile)
+		err = deleteProfile(context.Background(), profile, options)
 		if err != nil {
 			out.WarningT("Failed to delete cluster {{.name}}.", out.V{"name": existing.Name})
 		}
@@ -895,21 +926,21 @@ func validateSpecifiedDriver(existing *config.ClusterConfig) {
 
 // validateDriver validates that the selected driver appears sane, exits if not
 func validateDriver(ds registry.DriverState, existing *config.ClusterConfig) {
-	name := ds.Name
-	os := detect.RuntimeOS()
+	driverName := ds.Name
+	osName := detect.RuntimeOS()
 	arch := detect.RuntimeArch()
-	klog.Infof("validating driver %q against %+v", name, existing)
-	if !driver.Supported(name) {
-		exit.Message(reason.DrvUnsupportedOS, "The driver '{{.driver}}' is not supported on {{.os}}/{{.arch}}", out.V{"driver": name, "os": os, "arch": arch})
+	klog.Infof("validating driver %q against %+v", driverName, existing)
+	if !driver.Supported(driverName) {
+		exit.Message(reason.DrvUnsupportedOS, "The driver '{{.driver}}' is not supported on {{.os}}/{{.arch}}", out.V{"driver": driverName, "os": osName, "arch": arch})
 	}
 
 	// if we are only downloading artifacts for a driver, we can stop validation here
-	if viper.GetBool("download-only") {
+	if viper.GetBool(flags.DownloadOnly) {
 		return
 	}
 
 	st := ds.State
-	klog.Infof("status for %s: %+v", name, st)
+	klog.Infof("status for %s: %+v", driverName, st)
 
 	if st.NeedsImprovement {
 		out.Styled(style.Improvement, `For improved {{.driver}} performance, {{.fix}}`, out.V{"driver": driver.FullName(ds.Name), "fix": translate.T(st.Fix)})
@@ -917,7 +948,7 @@ func validateDriver(ds registry.DriverState, existing *config.ClusterConfig) {
 
 	if ds.Priority == registry.Obsolete {
 		exit.Message(reason.Kind{
-			ID:       fmt.Sprintf("PROVIDER_%s_OBSOLETE", strings.ToUpper(name)),
+			ID:       fmt.Sprintf("PROVIDER_%s_OBSOLETE", strings.ToUpper(driverName)),
 			Advice:   translate.T(st.Fix),
 			ExitCode: reason.ExProviderUnsupported,
 			URL:      st.Doc,
@@ -936,23 +967,23 @@ func validateDriver(ds registry.DriverState, existing *config.ClusterConfig) {
 
 	if !st.Installed {
 		exit.Message(reason.Kind{
-			ID:       fmt.Sprintf("PROVIDER_%s_NOT_FOUND", strings.ToUpper(name)),
+			ID:       fmt.Sprintf("PROVIDER_%s_NOT_FOUND", strings.ToUpper(driverName)),
 			Advice:   translate.T(st.Fix),
 			ExitCode: reason.ExProviderNotFound,
 			URL:      st.Doc,
 			Style:    style.Shrug,
-		}, `The '{{.driver}}' provider was not found: {{.error}}`, out.V{"driver": name, "error": st.Error})
+		}, `The '{{.driver}}' provider was not found: {{.error}}`, out.V{"driver": driverName, "error": st.Error})
 	}
 
 	id := st.Reason
 	if id == "" {
-		id = fmt.Sprintf("PROVIDER_%s_ERROR", strings.ToUpper(name))
+		id = fmt.Sprintf("PROVIDER_%s_ERROR", strings.ToUpper(driverName))
 	}
 
 	code := reason.ExProviderUnavailable
 
 	if !st.Running {
-		id = fmt.Sprintf("PROVIDER_%s_NOT_RUNNING", strings.ToUpper(name))
+		id = fmt.Sprintf("PROVIDER_%s_NOT_RUNNING", strings.ToUpper(driverName))
 		code = reason.ExProviderNotRunning
 	}
 
@@ -1028,7 +1059,7 @@ func validateUser(drvName string) {
 
 	// None driver works with root and without root on Linux
 	if runtime.GOOS == "linux" && drvName == driver.None {
-		if !viper.GetBool(interactive) {
+		if !viper.GetBool(flags.Interactive) {
 			test := exec.Command("sudo", "-n", "echo", "-n")
 			if err := test.Run(); err != nil {
 				exit.Message(reason.DrvNeedsRoot, `sudo requires a password, and --interactive=false`)
@@ -1091,8 +1122,8 @@ func suggestMemoryAllocation(sysLimit, containerLimit, nodes int) int {
 		return mem
 	}
 
-	const fallback = 2200
-	maximum := 6000
+	const fallback = 3072
+	maximum := 6144
 
 	if sysLimit > 0 && fallback > sysLimit {
 		return sysLimit
@@ -1212,12 +1243,14 @@ func validateCPUCount(drvName string) {
 		availableCPUs = ci
 	}
 
-	if availableCPUs < 2 {
-		if drvName == oci.Docker && runtime.GOOS == "darwin" {
+	switch {
+	case availableCPUs < 2:
+		switch {
+		case drvName == oci.Docker && runtime.GOOS == "darwin":
 			exitIfNotForced(reason.RsrcInsufficientDarwinDockerCores, "Docker Desktop has less than 2 CPUs configured, but Kubernetes requires at least 2 to be available")
-		} else if drvName == oci.Docker && runtime.GOOS == "windows" {
+		case drvName == oci.Docker && runtime.GOOS == "windows":
 			exitIfNotForced(reason.RsrcInsufficientWindowsDockerCores, "Docker Desktop has less than 2 CPUs configured, but Kubernetes requires at least 2 to be available")
-		} else {
+		default:
 			exitIfNotForced(reason.RsrcInsufficientCores, "{{.driver_name}} has less than 2 CPUs available, but Kubernetes requires at least 2 to be available", out.V{"driver_name": driver.FullName(viper.GetString("driver"))})
 		}
 	}
@@ -1350,8 +1383,8 @@ func validateFlags(cmd *cobra.Command, drvName string) { //nolint:gocyclo
 
 	// check that kubeadm extra args contain only allowed parameters
 	for param := range config.ExtraOptions.AsMap().Get(bsutil.Kubeadm) {
-		if !config.ContainsParam(bsutil.KubeadmExtraArgsAllowed[bsutil.KubeadmCmdParam], param) &&
-			!config.ContainsParam(bsutil.KubeadmExtraArgsAllowed[bsutil.KubeadmConfigParam], param) {
+		if !slices.Contains(bsutil.KubeadmExtraArgsAllowed[bsutil.KubeadmCmdParam], param) &&
+			!slices.Contains(bsutil.KubeadmExtraArgsAllowed[bsutil.KubeadmConfigParam], param) {
 			exit.Message(reason.Usage, "Sorry, the kubeadm.{{.parameter_name}} parameter is currently not supported by --extra-config", out.V{"parameter_name": param})
 		}
 	}
@@ -1377,7 +1410,7 @@ func validatePorts(ports []string) error {
 	}
 	_, portBindingsMap, err := nat.ParsePortSpecs(portSpecs)
 	if err != nil {
-		return errors.Errorf("Sorry, one of the ports provided with --ports flag is not valid %s (%v)", ports, err)
+		return fmt.Errorf("Sorry, one of the ports provided with --ports flag is not valid %s (%v)", ports, err)
 	}
 	for exposedPort, portBindings := range portBindingsMap {
 		exposedPorts = append(exposedPorts, exposedPort.Port())
@@ -1401,10 +1434,10 @@ func validatePorts(ports []string) error {
 func validatePort(port string) error {
 	p, err := strconv.Atoi(port)
 	if err != nil {
-		return errors.Errorf("Sorry, one of the ports provided with --ports flag is not valid: %s", port)
+		return fmt.Errorf("Sorry, one of the ports provided with --ports flag is not valid: %s", port)
 	}
 	if p > 65535 || p < 1 {
-		return errors.Errorf("Sorry, one of the ports provided with --ports flag is outside range: %s", port)
+		return fmt.Errorf("Sorry, one of the ports provided with --ports flag is outside range: %s", port)
 	}
 	return nil
 }
@@ -1413,10 +1446,10 @@ func validatePort(port string) error {
 func validateDiskSize(diskSize string) error {
 	diskSizeMB, err := util.CalculateSizeInMB(diskSize)
 	if err != nil {
-		return errors.Errorf("Validation unable to parse disk size %v: %v", diskSize, err)
+		return fmt.Errorf("Validation unable to parse disk size %v: %v", diskSize, err)
 	}
 	if diskSizeMB < minimumDiskSize {
-		return errors.Errorf("Requested disk size %v is less than minimum of %v", diskSizeMB, minimumDiskSize)
+		return fmt.Errorf("Requested disk size %v is less than minimum of %v", diskSizeMB, minimumDiskSize)
 	}
 	return nil
 }
@@ -1444,12 +1477,12 @@ func validateRuntime(rtime string) error {
 
 	}
 
-	if (rtime == "crio" || rtime == "cri-o") && (strings.HasPrefix(runtime.GOARCH, "ppc64") || detect.RuntimeArch() == "arm" || strings.HasPrefix(detect.RuntimeArch(), "arm/")) {
-		return errors.Errorf("The %s runtime is not compatible with the %s architecture. See https://github.com/cri-o/cri-o/issues/2467 for more details", rtime, runtime.GOARCH)
+	if (rtime == "crio" || rtime == "cri-o") && strings.HasPrefix(runtime.GOARCH, "ppc64") {
+		return fmt.Errorf("The %s runtime is not compatible with the %s architecture. See https://github.com/cri-o/cri-o/issues/2467 for more details", rtime, runtime.GOARCH)
 	}
 
 	if !validRuntime {
-		return errors.Errorf("Invalid Container Runtime: %s. Valid runtimes are: %s", rtime, cruntime.ValidRuntimes())
+		return fmt.Errorf("Invalid Container Runtime: %s. Valid runtimes are: %s", rtime, cruntime.ValidRuntimes())
 	}
 	return nil
 }
@@ -1462,13 +1495,13 @@ func validateGPUs(value, drvName, rtime string) error {
 	if err := validateGPUsArch(); err != nil {
 		return err
 	}
-	if value != "nvidia" && value != "all" && value != "amd" {
-		return errors.Errorf(`The gpus flag must be passed a value of "nvidia", "amd" or "all"`)
+	if value != "nvidia" && value != "all" && value != "amd" && value != "nvidia.com" {
+		return fmt.Errorf(`The gpus flag must be passed a value of "nvidia", "nvidia.com", "amd" or "all"`)
 	}
 	if drvName == constants.Docker && (rtime == constants.Docker || rtime == constants.DefaultContainerRuntime) {
 		return nil
 	}
-	return errors.Errorf("The gpus flag can only be used with the docker driver and docker container-runtime")
+	return fmt.Errorf("The gpus flag can only be used with the docker driver and docker container-runtime")
 }
 
 func validateGPUsArch() error {
@@ -1476,7 +1509,7 @@ func validateGPUsArch() error {
 	case "amd64", "arm64", "ppc64le":
 		return nil
 	}
-	return errors.Errorf("The GPUs flag is only supported on amd64, arm64 & ppc64le, currently using %s", runtime.GOARCH)
+	return fmt.Errorf("The GPUs flag is only supported on amd64, arm64 & ppc64le, currently using %s", runtime.GOARCH)
 }
 
 func validateAutoPauseInterval(interval time.Duration) error {
@@ -1508,15 +1541,15 @@ func defaultRuntime() string {
 }
 
 // if container runtime is not docker, check that cni is not disabled
-func validateCNI(cmd *cobra.Command, runtime string) {
-	if runtime == constants.Docker {
+func validateCNI(cmd *cobra.Command, runtimeName string) {
+	if runtimeName == constants.Docker {
 		return
 	}
 	if cmd.Flags().Changed(cniFlag) && strings.ToLower(viper.GetString(cniFlag)) == "false" {
 		if viper.GetBool(force) {
-			out.WarnReason(reason.Usage, "You have chosen to disable the CNI but the \"{{.name}}\" container runtime requires CNI", out.V{"name": runtime})
+			out.WarnReason(reason.Usage, "You have chosen to disable the CNI but the \"{{.name}}\" container runtime requires CNI", out.V{"name": runtimeName})
 		} else {
-			exit.Message(reason.Usage, "The \"{{.name}}\" container runtime requires CNI", out.V{"name": runtime})
+			exit.Message(reason.Usage, "The \"{{.name}}\" container runtime requires CNI", out.V{"name": runtimeName})
 		}
 	}
 }
@@ -1533,15 +1566,16 @@ func validateChangedMemoryFlags(drvName string) {
 	var req int
 	var err error
 	memString := viper.GetString(memory)
-	if memString == constants.NoLimit && driver.IsKIC(drvName) {
+	switch {
+	case memString == constants.NoLimit && driver.IsKIC(drvName):
 		req = 0
-	} else if memString == constants.MaxResources {
+	case memString == constants.MaxResources:
 		sysLimit, containerLimit, err := memoryLimits(drvName)
 		if err != nil {
 			klog.Warningf("Unable to query memory limits: %+v", err)
 		}
 		req = noLimitMemory(sysLimit, containerLimit, drvName)
-	} else {
+	default:
 		if memString == constants.NoLimit {
 			exit.Message(reason.Usage, "The '{{.name}}' driver does not support --memory=no-limit", out.V{"name": drvName})
 		}
@@ -1680,7 +1714,7 @@ func validateInsecureRegistry() {
 func configureNodes(cc config.ClusterConfig, existing *config.ClusterConfig) (config.ClusterConfig, config.Node, error) {
 	kv, err := getKubernetesVersion(&cc)
 	if err != nil {
-		return cc, config.Node{}, errors.Wrapf(err, "failed getting kubernetes version")
+		return cc, config.Node{}, fmt.Errorf("failed getting kubernetes version: %w", err)
 	}
 	cr := getContainerRuntime(&cc)
 
@@ -1709,7 +1743,7 @@ func configureNodes(cc config.ClusterConfig, existing *config.ClusterConfig) (co
 
 	pcp, err := config.ControlPlane(*existing)
 	if err != nil {
-		return cc, config.Node{}, errors.Wrapf(err, "failed getting control-plane node")
+		return cc, config.Node{}, fmt.Errorf("failed getting control-plane node: %w", err)
 	}
 	pcp.KubernetesVersion = kv
 	pcp.ContainerRuntime = cr
@@ -1730,7 +1764,7 @@ func autoSetDriverOptions(cmd *cobra.Command, drvName string) (err error) {
 			klog.Infof("auto setting extra-config to %q.", eo)
 			err = config.ExtraOptions.Set(eo)
 			if err != nil {
-				err = errors.Wrapf(err, "setting extra option %s", eo)
+				err = fmt.Errorf("setting extra option %s: %w", eo, err)
 			}
 		}
 	}
@@ -1789,7 +1823,7 @@ func validateKubernetesVersion(old *config.ClusterConfig) {
 	}
 	if nvs.GT(newestVersion) {
 		out.WarningT("Specified Kubernetes version {{.specified}} is newer than the newest supported version: {{.newest}}. Use `minikube config defaults kubernetes-version` for details.", out.V{"specified": nvs, "newest": constants.NewestKubernetesVersion})
-		if contains(constants.ValidKubernetesVersions, kubernetesVer) {
+		if slices.Contains(constants.ValidKubernetesVersions, kubernetesVer) {
 			out.Styled(style.Check, "Kubernetes version {{.specified}} found in version list", out.V{"specified": nvs})
 		} else {
 			out.WarningT("Specified Kubernetes version {{.specified}} not found in Kubernetes version list", out.V{"specified": nvs})
@@ -1934,16 +1968,16 @@ func validateDockerStorageDriver(drvName string) {
 func validateSubnet(subnet string) error {
 	ip, cidr, err := netutil.ParseAddr(subnet)
 	if err != nil {
-		return errors.Errorf("Sorry, unable to parse subnet: %v", err)
+		return fmt.Errorf("Sorry, unable to parse subnet: %v", err)
 	}
 	if !ip.IsPrivate() {
-		return errors.Errorf("Sorry, the subnet %s is not a private IP", ip)
+		return fmt.Errorf("Sorry, the subnet %s is not a private IP", ip)
 	}
 
 	if cidr != nil {
 		mask, _ := cidr.Mask.Size()
 		if mask > 30 {
-			return errors.Errorf("Sorry, the subnet provided does not have a mask less than or equal to /30")
+			return fmt.Errorf("Sorry, the subnet provided does not have a mask less than or equal to /30")
 		}
 	}
 	return nil
@@ -1997,16 +2031,16 @@ func validateBareMetal(drvName string) {
 	if err != nil {
 		klog.Warningf("failed getting Kubernetes version: %v", err)
 	}
-	version, _ := util.ParseKubernetesVersion(kubeVer)
-	if version.GTE(semver.MustParse("1.18.0-beta.1")) {
+	ver, _ := util.ParseKubernetesVersion(kubeVer)
+	if ver.GTE(semver.MustParse("1.18.0-beta.1")) {
 		if _, err := exec.LookPath("conntrack"); err != nil {
-			exit.Message(reason.GuestMissingConntrack, "Sorry, Kubernetes {{.k8sVersion}} requires conntrack to be installed in root's path", out.V{"k8sVersion": version.String()})
+			exit.Message(reason.GuestMissingConntrack, "Sorry, Kubernetes {{.k8sVersion}} requires conntrack to be installed in root's path", out.V{"k8sVersion": ver.String()})
 		}
 	}
 	// crictl is required starting with Kubernetes 1.24, for all runtimes since the removal of dockershim
-	if version.GTE(semver.MustParse("1.24.0-alpha.0")) {
+	if ver.GTE(semver.MustParse("1.24.0-alpha.0")) {
 		if _, err := exec.LookPath("crictl"); err != nil {
-			exit.Message(reason.GuestMissingConntrack, "Sorry, Kubernetes {{.k8sVersion}} requires crictl to be installed in root's path", out.V{"k8sVersion": version.String()})
+			exit.Message(reason.GuestMissingConntrack, "Sorry, Kubernetes {{.k8sVersion}} requires crictl to be installed in root's path", out.V{"k8sVersion": ver.String()})
 		}
 	}
 }
@@ -2019,10 +2053,10 @@ func exitIfNotForced(r reason.Kind, message string, v ...out.V) {
 }
 
 func exitGuestProvision(err error) {
-	if errors.Cause(err) == oci.ErrInsufficientDockerStorage {
+	if errors.Is(err, oci.ErrInsufficientDockerStorage) {
 		exit.Message(reason.RsrcInsufficientDockerStorage, "preload extraction failed: \"No space left on device\"")
 	}
-	if errors.Cause(err) == oci.ErrGetSSHPortContainerNotRunning {
+	if errors.Is(err, oci.ErrGetSSHPortContainerNotRunning) {
 		exit.Message(reason.GuestProvisionContainerExited, "Docker container exited prematurely after it was created, consider investigating Docker's performance/health.")
 	}
 	exit.Error(reason.GuestProvision, "error provisioning guest", err)
@@ -2046,43 +2080,23 @@ func isTwoDigitSemver(ver string) bool {
 	return majorMinorOnly.MatchString(ver)
 }
 
-func startNerdctld() {
+func startNerdctld(options *run.CommandOptions) {
 	// for containerd runtime using ssh, we have installed nerdctld and nerdctl into kicbase
 	// These things will be included in the ISO/Base image in the future versions
 
 	// copy these binaries to the path of the containerd node
-	co := mustload.Running(ClusterFlagValue())
+	co := mustload.Running(ClusterFlagValue(), options)
 	runner := co.CP.Runner
 
-	// and set 777 to these files
-	if out, err := runner.RunCmd(exec.Command("sudo", "chmod", "777", "/usr/local/bin/nerdctl", "/usr/local/bin/nerdctld")); err != nil {
-		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed setting permission for nerdctl: %s", out.Output()), err)
-	}
-
-	// sudo systemctl start nerdctld.socket
-	if out, err := runner.RunCmd(exec.Command("sudo", "systemctl", "start", "nerdctld.socket")); err != nil {
-		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed to enable nerdctld.socket: %s", out.Output()), err)
-	}
-	// sudo systemctl start nerdctld.service
-	if out, err := runner.RunCmd(exec.Command("sudo", "systemctl", "start", "nerdctld.service")); err != nil {
-		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed to enable nerdctld.service: %s", out.Output()), err)
+	// sudo systemctl start nerdctl.socket
+	if rest, err := runner.RunCmd(exec.Command("sudo", "systemctl", "start", "nerdctl.socket")); err != nil {
+		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed to enable nerdctl.socket: %s", rest.Output()), err)
 	}
 
 	// set up environment variable on remote machine. docker client uses 'non-login & non-interactive shell' therefore the only way is to modify .bashrc file of user 'docker'
 	// insert this at 4th line
-	envSetupCommand := exec.Command("/bin/bash", "-c", "sed -i '4i export DOCKER_HOST=unix:///run/nerdctld.sock' .bashrc")
-	if out, err := runner.RunCmd(envSetupCommand); err != nil {
-		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed to set up DOCKER_HOST: %s", out.Output()), err)
+	envSetupCommand := exec.Command("/bin/bash", "-c", "sed -i '4i export DOCKER_HOST=unix:///var/run/nerdctl.sock' .bashrc")
+	if rest, err := runner.RunCmd(envSetupCommand); err != nil {
+		exit.Error(reason.StartNerdctld, fmt.Sprintf("Failed to set up DOCKER_HOST: %s", rest.Output()), err)
 	}
-}
-
-// contains checks whether the parameter slice contains the parameter string
-func contains(sl []string, s string) bool {
-	for _, k := range sl {
-		if s == k {
-			return true
-		}
-
-	}
-	return false
 }

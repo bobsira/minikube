@@ -20,11 +20,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juju/mutex/v2"
+	"k8s.io/minikube/pkg/util/lock"
 )
 
 func TestFreeSubnet(t *testing.T) {
-	reserveSubnet = func(_ string) (mutex.Releaser, error) { return nil, nil }
+	reserveSubnet = func(_ string) (lock.Releaser, error) { return nil, nil }
 
 	t.Run("NoRetriesSuccess", func(t *testing.T) {
 		startingSubnet := "192.168.0.0"
@@ -96,7 +96,7 @@ func TestFreeSubnet(t *testing.T) {
 			t.Fatalf("expected to fail since IP non-private but no error thrown")
 		}
 		if !strings.Contains(err.Error(), startingSubnet) {
-			t.Errorf("expected starting subnet of %q to be included in error, but intead got: %v", startingSubnet, err)
+			t.Errorf("expected starting subnet of %q to be included in error, but instead got: %v", startingSubnet, err)
 		}
 	})
 }

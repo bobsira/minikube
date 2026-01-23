@@ -41,14 +41,14 @@ declare -rx DEB_VER="$(make deb_version)"
 docker kill $(docker ps -q) || true
 docker rm $(docker ps -aq) || true
 docker system prune -a --volumes -f
+# read only token, never expires
+docker login -u minikubebot -p "$DOCKERHUB_READONLY_TOKEN"
 make -j 16 \
   all \
   minikube-darwin-arm64 \
   out/mkcmp \
   out/minikube_${DEB_VER}_amd64.deb \
   out/minikube_${DEB_VER}_arm64.deb \
-  out/docker-machine-driver-kvm2_$(make deb_version_base).deb \
-  out/docker-machine-driver-kvm2_${DEB_VER}_amd64.deb \
 && failed=$? || failed=$?
 
 BUILT_VERSION=$("out/minikube-$(go env GOOS)-$(go env GOARCH)" version)
@@ -75,7 +75,7 @@ cp -r test/integration/testdata out/
 rm -rf out/buildroot
 
 # At this point, the out directory contains the jenkins scripts (populated by jenkins),
-# testdata, and our build output. Push the changes to GCS so that worker nodes can re-use them.
+# testdata, and our build output. Push the changes to GCS so that worker nodes can reuse them.
 
 # -d: delete remote files that don't exist (removed test files, for instance)
 # -J: gzip compression

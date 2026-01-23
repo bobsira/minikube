@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"k8s.io/minikube/pkg/minikube/out"
 )
 
@@ -44,11 +43,11 @@ func ErrorCodes(docPath string, pathsToCheck []string) error {
 	for _, pathToCheck := range pathsToCheck {
 		r, err := os.ReadFile(pathToCheck)
 		if err != nil {
-			return errors.Wrap(err, fmt.Sprintf("error reading file %s", pathToCheck))
+			return fmt.Errorf("%s: %w", fmt.Sprintf("error reading file %s", pathToCheck), err)
 		}
 		file, err := parser.ParseFile(fset, "", r, parser.ParseComments)
 		if err != nil {
-			return errors.Wrap(err, fmt.Sprintf("error parsing file %s", pathToCheck))
+			return fmt.Errorf("%s: %w", fmt.Sprintf("error parsing file %s", pathToCheck), err)
 		}
 
 		if strings.Contains(pathToCheck, "exitcodes.go") {
@@ -83,7 +82,7 @@ func ErrorCodes(docPath string, pathsToCheck []string) error {
 
 					// This is the numeric code of the error, e.g. 80 for ExGuest Error
 					code := s.Value
-					buf.WriteString(fmt.Sprintf("%s: %s  \n", code, currentError))
+					fmt.Fprintf(buf, "%s: %s  \n", code, currentError)
 				}
 				return true
 			})
@@ -100,7 +99,7 @@ func ErrorCodes(docPath string, pathsToCheck []string) error {
 					currentNode = id.Name
 					if strings.HasPrefix(currentNode, "Ex") && currentNode != "ExitCode" {
 						// We have all the info we're going to get on this error, print it out
-						buf.WriteString(fmt.Sprintf("%s (Exit code %v)  \n", currentID, currentNode))
+						fmt.Fprintf(buf, "%s (Exit code %v)  \n", currentID, currentNode)
 						if currentComment != "" {
 							buf.WriteString(currentComment + "  \n")
 						}

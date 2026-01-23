@@ -19,11 +19,11 @@ package bsutil
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/blang/semver/v4"
-	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/config"
 )
@@ -87,7 +87,7 @@ func CreateFlagsFromExtraArgs(extraOptions config.ExtraOptionSlice) string {
 	// kubeadm allows only a small set of parameters to be supplied from the command line when the --config param
 	// is specified, here we remove those that are not allowed
 	for opt := range kubeadmExtraOpts {
-		if !config.ContainsParam(KubeadmExtraArgsAllowed[KubeadmCmdParam], opt) {
+		if !slices.Contains(KubeadmExtraArgsAllowed[KubeadmCmdParam], opt) {
 			// kubeadmExtraOpts is a copy so safe to delete
 			delete(kubeadmExtraOpts, opt)
 		}
@@ -115,7 +115,7 @@ func FindInvalidExtraConfigFlags(opts config.ExtraOptionSlice) []string {
 func extraConfigForComponent(component string, opts config.ExtraOptionSlice, version semver.Version) (map[string]string, error) {
 	versionedOpts, err := defaultOptionsForComponentAndVersion(component, version)
 	if err != nil {
-		return nil, errors.Wrapf(err, "setting version specific options for %s", component)
+		return nil, fmt.Errorf("setting version specific options for %s: %w", component, err)
 	}
 
 	for _, opt := range opts {
@@ -160,7 +160,7 @@ func newComponentOptions(opts config.ExtraOptionSlice, version semver.Version, f
 		}
 		extraConfig, err := extraConfigForComponent(component, opts, version)
 		if err != nil {
-			return nil, errors.Wrapf(err, "getting kubeadm extra args for %s", component)
+			return nil, fmt.Errorf("getting kubeadm extra args for %s: %w", component, err)
 		}
 		if featureGates != "" {
 			extraConfig["feature-gates"] = featureGates

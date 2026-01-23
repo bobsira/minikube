@@ -17,8 +17,8 @@ limitations under the License.
 package config
 
 import (
-	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -32,8 +32,8 @@ func TestAddonsList(t *testing.T) {
 		printDocs bool
 		want      int
 	}{
-		{"DisabledDocs", false, 9},
-		{"EnabledDocs", true, 12},
+		{"DisabledDocs", false, 3},
+		{"EnabledDocs", true, 4},
 	}
 
 	for _, tt := range tests {
@@ -42,32 +42,46 @@ func TestAddonsList(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create pipe: %v", err)
 			}
+			defer r.Close()
 			old := os.Stdout
-			defer func() { os.Stdout = old }()
+			defer func() {
+				os.Stdout = old
+				out.SetOutFile(old)
+			}()
 			os.Stdout = w
+			out.SetOutFile(w)
+
+			done := make(chan string, 1)
+			go func() {
+				b, _ := io.ReadAll(r)
+				done <- string(b)
+			}()
+
 			printAddonsList(nil, tt.printDocs)
+
 			if err := w.Close(); err != nil {
 				t.Fatalf("failed to close pipe: %v", err)
 			}
-			buf := bufio.NewScanner(r)
+
+			s := <-done
+			lines := strings.Split(s, "\n")
+			if len(lines) < 3 {
+				t.Fatalf("failed to read stdout: got %d lines: %q", len(lines), s)
+			}
+
 			pipeCount := 0
 			got := ""
-			// Pull the first 3 lines from stdout
 			for i := 0; i < 3; i++ {
-				if !buf.Scan() {
-					t.Fatalf("failed to read stdout")
-				}
-				pipeCount += strings.Count(buf.Text(), "|")
-				got += buf.Text()
+				pipeCount += strings.Count(lines[i], "│")
+				got += lines[i]
 			}
-			if err := buf.Err(); err != nil {
-				t.Errorf("failed to read stdout: %v", err)
-			}
-			// The lines we pull should look something like
-			// |------------|------------|(------|)
-			// | ADDON NAME | MAINTAINER |( DOCS |)
-			// |------------|------------|(------|)
-			// which has 9 or 12 pipes
+			// ┌─────────────────────────────┬────────────────────────────────────────┐
+			// │         ADDON NAME          │               MAINTAINER               │
+			// ├─────────────────────────────┼────────────────────────────────────────┤
+			// ┌─────────────────────────────┬────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┐
+			// │         ADDON NAME          │               MAINTAINER               │                                     DOCS                                      │
+			// ├─────────────────────────────┼────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+
 			expected := tt.want
 			if pipeCount != expected {
 				t.Errorf("Expected header to have %d pipes; got = %d: %q", expected, pipeCount, got)

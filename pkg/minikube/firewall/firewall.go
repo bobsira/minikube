@@ -24,11 +24,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/spf13/viper"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 )
 
@@ -38,24 +38,32 @@ func IsBootpdBlocked(cc config.ClusterConfig) bool {
 	if cc.Driver != driver.QEMU2 || runtime.GOOS != "darwin" || cc.Network != "socket_vmnet" {
 		return false
 	}
-	out, err := exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate").Output()
+	rest, err := exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate").Output()
 	if err != nil {
 		klog.Warningf("failed to get firewall state: %v", err)
 		return false
 	}
-	if regexp.MustCompile(`Firewall is disabled`).Match(out) {
+	if regexp.MustCompile(`Firewall is disabled`).Match(rest) {
 		return false
 	}
-	out, err = exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--listapps").Output()
+	rest, err = exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getallowsigned").Output()
+	if err != nil {
+		// macOS < 15 or other issue: need to use --list.
+		klog.Warningf("failed to list firewall allowedsinged option: %v", err)
+		// macOS >= 15: bootpd may be allowed as builtin software
+	} else if regexp.MustCompile(`Automatically allow built-in signed software ENABLED`).Match(rest) {
+		return false
+	}
+	rest, err = exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--listapps").Output()
 	if err != nil {
 		klog.Warningf("failed to list firewall apps: %v", err)
 		return false
 	}
-	return !regexp.MustCompile(`\/usr\/libexec\/bootpd.*\n.*\( Allow`).Match(out)
+	return !regexp.MustCompile(`\/usr\/libexec\/bootpd.*\n.*\( Allow`).Match(rest)
 }
 
 // UnblockBootpd adds bootpd to the built-in macOS firewall and then unblocks it
-func UnblockBootpd() error {
+func UnblockBootpd(options *run.CommandOptions) error {
 	cmds := []*exec.Cmd{
 		exec.Command("sudo", "/usr/libexec/ApplicationFirewall/socketfilterfw", "--add", "/usr/libexec/bootpd"),
 		exec.Command("sudo", "/usr/libexec/ApplicationFirewall/socketfilterfw", "--unblock", "/usr/libexec/bootpd"),
@@ -74,7 +82,7 @@ func UnblockBootpd() error {
 		klog.Infof("testing: %s", test.Args)
 		if err := test.Run(); err != nil {
 			klog.Infof("%v may require a password: %v", c.Args, err)
-			if !viper.GetBool("interactive") {
+			if !options.NonInteractive {
 				klog.Warningf("%s requires a password, and --interactive=false", c.Args)
 				c.Args = slices.Insert(c.Args, 1, "-n")
 			}

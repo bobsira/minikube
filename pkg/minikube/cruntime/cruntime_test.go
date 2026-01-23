@@ -26,7 +26,6 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/command"
@@ -218,7 +217,7 @@ func buffer(s string, err error) (*command.RunResult, error) {
 	var buf bytes.Buffer
 	_, err = buf.WriteString(s)
 	if err != nil {
-		return rr, errors.Wrap(err, "Writing outStr to FakeRunner's buffer")
+		return rr, fmt.Errorf("Writing outStr to FakeRunner's buffer: %w", err)
 	}
 	rr.Stdout = buf
 	rr.Stderr = buf
@@ -428,6 +427,9 @@ func (f *FakeRunner) containerd(args []string, _ bool) (string, error) {
 // crictl is a fake implementation of crictl
 func (f *FakeRunner) crictl(args []string, _ bool) (string, error) {
 	f.t.Logf("crictl args: %s", args)
+	if len(args) > 0 && strings.HasPrefix(args[0], "--timeout=") {
+		args = args[1:]
+	}
 	switch cmd := args[0]; cmd {
 	case "info":
 		return `{
@@ -554,7 +556,7 @@ func (f *FakeRunner) systemctl(args []string, root bool) (string, error) { // no
 			f.t.Logf("fake systemctl: SvcRestarted %s", svc)
 		case "is-active":
 			f.t.Logf("fake systemctl: %s is-status: %v", svc, state)
-			if state == SvcRunning {
+			if state == SvcRunning || state == SvcRestarted {
 				return out, nil
 			}
 			return out, fmt.Errorf("%s in state: %v", svc, state)
@@ -572,7 +574,9 @@ func (f *FakeRunner) systemctl(args []string, root bool) (string, error) { // no
 		case "disable":
 		case "mask":
 		case "unmask":
+		case "reset-failed":
 			f.t.Logf("fake systemctl: %s %s: %v", svc, action, state)
+
 		default:
 			return out, fmt.Errorf("unimplemented fake action: %q", action)
 		}

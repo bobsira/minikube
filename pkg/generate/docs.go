@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/out"
@@ -40,15 +39,15 @@ func Docs(root *cobra.Command, path string, testPath string, codePath string) er
 		}
 		contents, err := DocForCommand(c)
 		if err != nil {
-			return errors.Wrapf(err, "generating doc for %s", c.Name())
+			return fmt.Errorf("generating doc for %s: %w", c.Name(), err)
 		}
 		if err := saveDocForCommand(c, []byte(contents), path); err != nil {
-			return errors.Wrapf(err, "saving doc for %s", c.Name())
+			return fmt.Errorf("saving doc for %s: %w", c.Name(), err)
 		}
 	}
 	err := TestDocs(testPath, "test/integration")
 	if err != nil {
-		return errors.Wrap(err, "failed to generate test docs")
+		return fmt.Errorf("failed to generate test docs: %w", err)
 	}
 
 	return ErrorCodes(codePath, []string{"pkg/minikube/reason/reason.go", "pkg/minikube/reason/exitcodes.go"})
@@ -58,16 +57,16 @@ func Docs(root *cobra.Command, path string, testPath string, codePath string) er
 func DocForCommand(command *cobra.Command) (string, error) {
 	buf := bytes.NewBuffer([]byte{})
 	if err := generateTitle(command, buf); err != nil {
-		return "", errors.Wrap(err, "generating title")
+		return "", fmt.Errorf("generating title: %w", err)
 	}
 	if err := rewriteLogFile(); err != nil {
-		return "", errors.Wrap(err, "rewriting log_file")
+		return "", fmt.Errorf("rewriting log_file: %w", err)
 	}
 	if err := rewriteFlags(command); err != nil {
-		return "", errors.Wrap(err, "rewriting flags")
+		return "", fmt.Errorf("rewriting flags: %w", err)
 	}
 	if err := writeSubcommands(command, buf); err != nil {
-		return "", errors.Wrap(err, "writing subcommands")
+		return "", fmt.Errorf("writing subcommands: %w", err)
 	}
 	return buf.String(), nil
 }
@@ -97,17 +96,17 @@ func GenMarkdownCustom(cmd *cobra.Command, w io.Writer) error {
 	buf.WriteString(long + "\n\n")
 
 	if cmd.Runnable() {
-		buf.WriteString(fmt.Sprintf("```shell\n%s\n```\n\n", cmd.UseLine()))
+		fmt.Fprintf(buf, "```shell\n%s\n```\n\n", cmd.UseLine())
 	}
 
 	if len(cmd.Aliases) > 0 {
 		buf.WriteString("### Aliases\n\n")
-		buf.WriteString(fmt.Sprintf("%s\n\n", cmd.Aliases))
+		fmt.Fprintf(buf, "%s\n\n", cmd.Aliases)
 	}
 
 	if len(cmd.Example) > 0 {
 		buf.WriteString("### Examples\n\n")
-		buf.WriteString(fmt.Sprintf("```\n%s\n```\n\n", cmd.Example))
+		fmt.Fprintf(buf, "```\n%s\n```\n\n", cmd.Example)
 	}
 
 	if err := printOptions(buf, cmd); err != nil {
@@ -139,7 +138,7 @@ func printOptions(buf *bytes.Buffer, cmd *cobra.Command) error {
 // writeSubcommands recursively appends all subcommands to the doc
 func writeSubcommands(command *cobra.Command, w io.Writer) error {
 	if err := GenMarkdown(command, w); err != nil {
-		return errors.Wrapf(err, "getting markdown custom")
+		return fmt.Errorf("getting markdown custom: %w", err)
 	}
 	if !command.HasSubCommands() {
 		return nil

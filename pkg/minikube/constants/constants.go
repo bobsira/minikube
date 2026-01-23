@@ -29,17 +29,19 @@ import (
 
 var (
 	// SupportedArchitectures is the list of supported architectures
-	SupportedArchitectures = [5]string{"amd64", "arm", "arm64", "ppc64le", "s390x"}
+	SupportedArchitectures = [4]string{"amd64", "arm64", "ppc64le", "s390x"}
 )
 
 const (
 	// DefaultKubernetesVersion is the default Kubernetes version
-	DefaultKubernetesVersion = "v1.32.0"
+	DefaultKubernetesVersion = "v1.35.0"
 	// NewestKubernetesVersion is the newest Kubernetes version to test against
 	// NOTE: You may need to update coreDNS & etcd versions in pkg/minikube/bootstrapper/images/images.go
-	NewestKubernetesVersion = "v1.32.0"
+	NewestKubernetesVersion = "v1.35.0"
 	// OldestKubernetesVersion is the oldest Kubernetes version to test against
-	OldestKubernetesVersion = "v1.20.0"
+	// TODO: upodate to 6 releases before from DefaultKubernetesVersion
+	OldestKubernetesVersion = "v1.28.0"
+
 	// NoKubernetesVersion is the version used when users does NOT want to install kubernetes
 	NoKubernetesVersion = "v0.0.0"
 
@@ -144,6 +146,9 @@ const (
 	// DefaultCertExpiration is the amount of time in the future a certificate will expire in by default, which is 3 years
 	DefaultCertExpiration = time.Hour * 24 * 365 * 3
 
+	// LockRetryInterval is the frequency to check for the lock (10 times a second)
+	LockRetryInterval = 100 * time.Millisecond
+
 	// Mount9PVersionFlag is the flag used to set the mount 9P version
 	Mount9PVersionFlag = "9p-version"
 	// MountGIDFlag is the flag used to set the mount GID
@@ -160,6 +165,11 @@ const (
 	MountTypeFlag = "type"
 	// MountUIDFlag is the flag used to set the mount UID
 	MountUIDFlag = "uid"
+
+	// FSType9p is 9p filesystem type
+	FSType9p = "9p"
+	// FSTypeVirtiofs is virtiofs filesystem type
+	FSTypeVirtiofs = "virtiofs"
 
 	// Mirror CN
 	AliyunMirror = "registry.cn-hangzhou.aliyuncs.com/google_containers"
@@ -203,7 +213,6 @@ var (
 	DefaultNamespaces = []string{
 		"kube-system",
 		"kubernetes-dashboard",
-		"storage-gluster",
 		"istio-operator",
 	}
 

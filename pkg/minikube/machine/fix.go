@@ -24,11 +24,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/state"
-	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/driver"
@@ -58,7 +57,7 @@ func fixHost(api libmachine.API, cc *config.ClusterConfig, n *config.Node) (*hos
 
 	h, err := api.Load(config.MachineName(*cc, *n))
 	if err != nil {
-		return h, errors.Wrap(err, "error loading existing host. Please try running [minikube delete], then run [minikube start] again")
+		return h, fmt.Errorf("error loading existing host. Please try running [minikube delete], then run [minikube start] again: %w", err)
 	}
 	defer postStartValidations(h, cc.Driver)
 
@@ -78,7 +77,7 @@ func fixHost(api libmachine.API, cc *config.ClusterConfig, n *config.Node) (*hos
 		h.HostOptions.EngineOptions.Env = e.Env
 		err = provisionDockerMachine(h)
 		if err != nil {
-			return h, errors.Wrap(err, "provision")
+			return h, fmt.Errorf("provision: %w", err)
 		}
 	}
 
@@ -87,7 +86,7 @@ func fixHost(api libmachine.API, cc *config.ClusterConfig, n *config.Node) (*hos
 	}
 
 	if err := postStartSetup(h, *cc); err != nil {
-		return h, errors.Wrap(err, "post-start")
+		return h, fmt.Errorf("post-start: %w", err)
 	}
 
 	// on vm node restart and for ha (multi-control plane) topology only (for now),
@@ -126,7 +125,7 @@ func recreateIfNeeded(api libmachine.API, cc *config.ClusterConfig, n *config.No
 
 			h, err = createHost(api, cc, n)
 			if err != nil {
-				return nil, errors.Wrap(err, "recreate")
+				return nil, fmt.Errorf("recreate: %w", err)
 			}
 
 			recreated = true
@@ -151,7 +150,7 @@ func recreateIfNeeded(api libmachine.API, cc *config.ClusterConfig, n *config.No
 	}
 	if err := h.Driver.Start(); err != nil {
 		MaybeDisplayAdvice(err, h.DriverName)
-		return h, errors.Wrap(err, "driver start")
+		return h, fmt.Errorf("driver start: %w", err)
 	}
 	if err := saveHost(api, h, cc, n); err != nil {
 		return h, err
@@ -201,7 +200,7 @@ func ensureSyncedGuestClock(h hostRunner, drv string) error {
 		return nil
 	}
 	if err := adjustGuestClock(h, time.Now()); err != nil {
-		return errors.Wrap(err, "adjusting system clock")
+		return fmt.Errorf("adjusting system clock: %w", err)
 	}
 	return nil
 }
@@ -209,19 +208,19 @@ func ensureSyncedGuestClock(h hostRunner, drv string) error {
 // guestClockDelta returns the approximate difference between the host and guest system clock
 // NOTE: This does not currently take into account ssh latency.
 func guestClockDelta(h hostRunner, local time.Time) (time.Duration, error) {
-	out, err := h.RunSSHCommand("date +%s.%N")
+	rest, err := h.RunSSHCommand("date +%s.%N")
 	if err != nil {
-		return 0, errors.Wrap(err, "get clock")
+		return 0, fmt.Errorf("get clock: %w", err)
 	}
-	klog.Infof("guest clock: %s", out)
-	ns := strings.Split(strings.TrimSpace(out), ".")
+	klog.Infof("guest clock: %s", rest)
+	ns := strings.Split(strings.TrimSpace(rest), ".")
 	secs, err := strconv.ParseInt(strings.TrimSpace(ns[0]), 10, 64)
 	if err != nil {
-		return 0, errors.Wrap(err, "atoi")
+		return 0, fmt.Errorf("atoi: %w", err)
 	}
 	nsecs, err := strconv.ParseInt(strings.TrimSpace(ns[1]), 10, 64)
 	if err != nil {
-		return 0, errors.Wrap(err, "atoi")
+		return 0, fmt.Errorf("atoi: %w", err)
 	}
 	// NOTE: In a synced state, remote is a few hundred ms ahead of local
 	remote := time.Unix(secs, nsecs)
@@ -232,8 +231,8 @@ func guestClockDelta(h hostRunner, local time.Time) (time.Duration, error) {
 
 // adjustGuestClock adjusts the guest system clock to be nearer to the host system clock
 func adjustGuestClock(h hostRunner, t time.Time) error {
-	out, err := h.RunSSHCommand(fmt.Sprintf("sudo date -s @%d", t.Unix()))
-	klog.Infof("clock set: %s (err=%v)", out, err)
+	rest, err := h.RunSSHCommand(fmt.Sprintf("sudo date -s @%d", t.Unix()))
+	klog.Infof("clock set: %s (err=%v)", rest, err)
 	return err
 }
 
@@ -253,10 +252,12 @@ func machineExistsMessage(s state.State, err error, msg string) (bool, error) {
 }
 
 func machineExistsDocker(s state.State, err error) (bool, error) {
-	if s == state.Error {
+
+	switch s {
+	case state.Error:
 		// if the kic image is not present on the host machine, when user cancel `minikube start`, state.Error will be return
 		return false, constants.ErrMachineMissing
-	} else if s == state.None {
+	case state.None:
 		// if the kic image is present on the host machine, when user cancel `minikube start`, state.None will be return
 		return false, constants.ErrMachineMissing
 	}

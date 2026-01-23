@@ -21,10 +21,10 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/state"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/libmachine"
+	"k8s.io/minikube/pkg/libmachine/host"
+	"k8s.io/minikube/pkg/libmachine/state"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/bsutil/kverify"
 	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/config"
@@ -34,6 +34,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/machine"
 	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/run"
 	"k8s.io/minikube/pkg/minikube/style"
 )
 
@@ -61,9 +62,9 @@ type ControlPlane struct {
 }
 
 // Partial is a cmd-friendly way to load a cluster which may or may not be running
-func Partial(name string, miniHome ...string) (libmachine.API, *config.ClusterConfig) {
+func Partial(name string, options *run.CommandOptions, miniHome ...string) (libmachine.API, *config.ClusterConfig) {
 	klog.Infof("Loading cluster: %s", name)
-	api, err := machine.NewAPIClient(miniHome...)
+	api, err := machine.NewAPIClient(options, miniHome...)
 	if err != nil {
 		exit.Error(reason.NewAPIClient, "libmachine failed", err)
 	}
@@ -81,16 +82,16 @@ func Partial(name string, miniHome ...string) (libmachine.API, *config.ClusterCo
 }
 
 // Running is a cmd-friendly way to load a running cluster.
-func Running(name string) ClusterController {
-	if r := running(name, true); r != nil {
+func Running(name string, options *run.CommandOptions) ClusterController {
+	if r := running(name, true, options); r != nil {
 		return r[0]
 	}
 	return ClusterController{}
 }
 
 // running returns first or all running ClusterControllers found or exits with specific error if none found.
-func running(name string, first bool) []ClusterController {
-	api, cc := Partial(name)
+func running(name string, first bool, options *run.CommandOptions) []ClusterController {
+	api, cc := Partial(name, options)
 
 	cps := config.ControlPlanes(*cc)
 	if len(cps) == 0 {
@@ -132,7 +133,7 @@ func running(name string, first bool) []ClusterController {
 			continue
 		}
 
-		host, err := machine.LoadHost(api, machineName)
+		hostInfo, err := machine.LoadHost(api, machineName)
 		if err != nil {
 			if last {
 				exit.Message(reason.GuestLoadHost, `Unable to load control-plane node {{.name}} host: {{.err}}`, out.V{"name": machineName, "err": err})
@@ -141,7 +142,7 @@ func running(name string, first bool) []ClusterController {
 			continue
 		}
 
-		cr, err := machine.CommandRunner(host)
+		cr, err := machine.CommandRunner(hostInfo)
 		if err != nil {
 			if last {
 				exit.Message(reason.InternalCommandRunner, `Unable to get control-plane node {{.name}} host command runner: {{.err}}`, out.V{"name": machineName, "err": err})
@@ -150,7 +151,7 @@ func running(name string, first bool) []ClusterController {
 			continue
 		}
 
-		hostname, ip, port, err := driver.ControlPlaneEndpoint(cc, &cp, host.DriverName)
+		hostname, ip, port, err := driver.ControlPlaneEndpoint(cc, &cp, hostInfo.DriverName)
 		if err != nil {
 			if last {
 				exit.Message(reason.DrvCPEndpoint, `Unable to get control-plane node {{.name}} endpoint: {{.err}}`, out.V{"name": machineName, "err": err})
@@ -164,7 +165,7 @@ func running(name string, first bool) []ClusterController {
 			Config: cc,
 			CP: ControlPlane{
 				Runner:   cr,
-				Host:     host,
+				Host:     hostInfo,
 				Node:     &cp,
 				Hostname: hostname,
 				IP:       ip,
@@ -179,8 +180,8 @@ func running(name string, first bool) []ClusterController {
 }
 
 // Healthy is a cmd-friendly way to load a healthy cluster.
-func Healthy(name string) ClusterController {
-	ctrls := running(name, false)
+func Healthy(name string, options *run.CommandOptions) ClusterController {
+	ctrls := running(name, false, options)
 
 	for i, ctrl := range ctrls {
 		// control flow depending on if we have any other cluster controllers to try in case of an error
@@ -223,8 +224,8 @@ func Healthy(name string) ClusterController {
 
 // exitTip returns an action tip and exits
 func exitTip(action string, profile string, code int) {
-	command := ExampleCmd(profile, action)
-	out.Styled(style.Workaround, `To start a cluster, run: "{{.command}}"`, out.V{"command": command})
+	cmd := ExampleCmd(profile, action)
+	out.Styled(style.Workaround, `To start a cluster, run: "{{.command}}"`, out.V{"command": cmd})
 	exit.Code(code)
 }
 

@@ -25,7 +25,7 @@ import (
 	"runtime"
 	"strconv"
 
-	"github.com/pkg/errors"
+	"errors"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/plotutil"
@@ -62,11 +62,13 @@ func execute() error {
 	p := plot.New()
 
 	// Set view options
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		p.Title.Text = "CPU% Busy Overhead - Average first 5 minutes on macOS (less is better)"
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		p.Title.Text = "CPU% Busy Overhead - Average first 5 minutes on Linux (less is better)"
 	}
+
 	p.Y.Label.Text = "CPU overhead%"
 
 	// Open csv file of benchmark summary
@@ -74,7 +76,7 @@ func execute() error {
 	fn := "./out/benchmark-results/" + sessionID + "/cstat.summary"
 	file, err := os.Open(fn)
 	if err != nil {
-		return errors.Wrap(err, "Missing summary csv")
+		return fmt.Errorf("Missing summary csv: %w", err)
 	}
 	defer file.Close()
 
@@ -89,7 +91,7 @@ func execute() error {
 
 		s, err := strconv.ParseFloat(line[0], 64)
 		if err != nil {
-			return errors.Wrap(err, "Failed to convert to float64")
+			return fmt.Errorf("Failed to convert to float64: %w", err)
 		}
 		results = append(results, s)
 	}
@@ -99,7 +101,7 @@ func execute() error {
 	// Create Bar instance with benchmark results
 	bar, err := plotter.NewBarChart(plotter.Values(results), breadth)
 	if err != nil {
-		return errors.Wrap(err, "Failed to create bar chart")
+		return fmt.Errorf("Failed to create bar chart: %w", err)
 	}
 
 	// Set border of the bar graph. 0 is no border color
@@ -114,9 +116,10 @@ func execute() error {
 	p.Legend.Top = true
 
 	// Add x-lay names
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		p.NominalX("OS idle", "minikube hyperkit", "minikube virtualbox", "minikube docker", "Docker for Mac Kubernetes", "k3d", "kind")
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		p.NominalX("OS idle", "minikube kvm2", "minikube virtualbox", "minikube docker", "Docker idle", "k3d", "kind")
 	}
 
@@ -151,16 +154,18 @@ func execute() error {
 	p.Add(cl)
 
 	// Output bar graph
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		if err := p.Save(13*vg.Inch, 8*vg.Inch, FOLDER+"/mac.png"); err != nil {
-			return errors.Wrap(err, "Failed to create bar graph png")
+			return fmt.Errorf("Failed to create bar graph png: %w", err)
 		}
 		log.Printf("Generated graph png to %s/mac.png", FOLDER)
-	} else if runtime.GOOS == "linux" {
+	case "linux":
 		if err := p.Save(13*vg.Inch, 10*vg.Inch, FOLDER+"/linux.png"); err != nil {
-			return errors.Wrap(err, "Failed to create bar graph png")
+			return fmt.Errorf("Failed to create bar graph png: %w", err)
 		}
 		log.Printf("Generated graph png to %s/linux.png", FOLDER)
 	}
+
 	return nil
 }

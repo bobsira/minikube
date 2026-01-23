@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/kapi"
 	"k8s.io/minikube/pkg/minikube/assets"
@@ -182,12 +181,12 @@ func applyManifest(cc config.ClusterConfig, r Runner, f assets.CopyableFile) err
 	klog.Infof("applying CNI manifest using %s ...", kubectl)
 
 	if err := r.Copy(f); err != nil {
-		return errors.Wrapf(err, "copy")
+		return fmt.Errorf("copy: %w", err)
 	}
 
 	cmd := exec.CommandContext(ctx, "sudo", kubectl, "apply", fmt.Sprintf("--kubeconfig=%s", path.Join(vmpath.GuestPersistentDir, "kubeconfig")), "-f", manifestPath())
 	if rr, err := r.RunCmd(cmd); err != nil {
-		return errors.Wrapf(err, "cmd: %s output: %s", rr.Command(), rr.Output())
+		return fmt.Errorf("cmd: %s output: %s: %w", rr.Command(), rr.Output(), err)
 	}
 
 	return nil
@@ -245,18 +244,18 @@ func ConfigureDefaultBridgeCNIs(r Runner, networkPlugin string) error {
 
 // disableAllBridgeCNIs disables all bridge cnis by changing extension to "mk_disabled" of all *bridge* config file(s) found in default location (ie, /etc/cni/net.d).
 func disableAllBridgeCNIs(r Runner) error {
-	path := "/etc/cni/net.d"
+	cniPath := "/etc/cni/net.d"
 
 	out, err := r.RunCmd(exec.Command(
 		// for cri-o, we also disable 87-podman.conflist (that does not have 'bridge' in its name)
-		"sudo", "find", path, "-maxdepth", "1", "-type", "f", "(", "(", "-name", "*bridge*", "-or", "-name", "*podman*", ")", "-and", "-not", "-name", "*.mk_disabled", ")", "-printf", "%p, ", "-exec", "sh", "-c",
+		"sudo", "find", cniPath, "-maxdepth", "1", "-type", "f", "(", "(", "-name", "*bridge*", "-or", "-name", "*podman*", ")", "-and", "-not", "-name", "*.mk_disabled", ")", "-printf", "%p, ", "-exec", "sh", "-c",
 		`sudo mv {} {}.mk_disabled`, ";"))
 	if err != nil {
-		return fmt.Errorf("failed to disable all bridge cni configs in %q: %v", path, err)
+		return fmt.Errorf("failed to disable all bridge cni configs in %q: %v", cniPath, err)
 	}
 	configs := strings.Trim(out.Stdout.String(), ", ")
 	if len(configs) == 0 {
-		klog.Infof("no active bridge cni configs found in %q - nothing to disable", path)
+		klog.Infof("no active bridge cni configs found in %q - nothing to disable", cniPath)
 		return nil
 	}
 	klog.Infof("disabled [%s] bridge cni config(s)", configs)

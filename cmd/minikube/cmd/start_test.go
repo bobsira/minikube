@@ -32,6 +32,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/cruntime"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/proxy"
+	"k8s.io/minikube/pkg/minikube/run"
 )
 
 func TestGetKubernetesVersion(t *testing.T) {
@@ -169,7 +170,7 @@ func TestMirrorCountry(t *testing.T) {
 			viper.SetDefault(imageRepository, test.imageRepository)
 			viper.SetDefault(imageMirrorCountry, test.mirrorCountry)
 			viper.SetDefault(kvmNUMACount, 1)
-			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, driver.Mock)
+			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, driver.Mock, &run.CommandOptions{})
 			if err != nil {
 				t.Fatalf("Got unexpected error %v during config generation", err)
 			}
@@ -230,7 +231,7 @@ func TestGenerateCfgFromFlagsHTTPProxyHandling(t *testing.T) {
 
 			cfg.DockerEnv = []string{} // clear docker env to avoid pollution
 			proxy.SetDockerEnv()
-			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, "none")
+			config, _, err := generateClusterConfig(cmd, nil, k8sVersion, rtime, "none", &run.CommandOptions{})
 			if err != nil {
 				t.Fatalf("Got unexpected error %v during config generation", err)
 			}
@@ -277,26 +278,26 @@ func TestSuggestMemoryAllocation(t *testing.T) {
 		nodes          int
 		want           int
 	}{
-		{"128GB sys", 128000, 0, 1, 6000},
-		{"64GB sys", 64000, 0, 1, 6000},
-		{"32GB sys", 32768, 0, 1, 6000},
+		{"128GB sys", 128000, 0, 1, 6144},
+		{"64GB sys", 64000, 0, 1, 6144},
+		{"32GB sys", 32768, 0, 1, 6144},
 		{"16GB sys", 16384, 0, 1, 4000},
 		{"odd sys", 14567, 0, 1, 3600},
-		{"4GB sys", 4096, 0, 1, 2200},
+		{"4GB sys", 4096, 0, 1, 3072},
 		{"2GB sys", 2048, 0, 1, 2048},
-		{"Unable to poll sys", 0, 0, 1, 2200},
+		{"Unable to poll sys", 0, 0, 1, 3072},
 		{"128GB sys, 16GB container", 128000, 16384, 1, 16336},
 		{"64GB sys, 16GB container", 64000, 16384, 1, 16000},
 		{"16GB sys, 4GB container", 16384, 4096, 1, 4000},
 		{"4GB sys, 3.5GB container", 16384, 3500, 1, 3452},
 		{"16GB sys, 2GB container", 16384, 2048, 1, 2048},
 		{"16GB sys, unable to poll container", 16384, 0, 1, 4000},
-		{"128GB sys 2 nodes", 128000, 0, 2, 6000},
-		{"8GB sys 3 nodes", 8192, 0, 3, 2200},
-		{"16GB sys 2 nodes", 16384, 0, 2, 2200},
+		{"128GB sys 2 nodes", 128000, 0, 2, 6144},
+		{"8GB sys 3 nodes", 8192, 0, 3, 3072},
+		{"16GB sys 2 nodes", 16384, 0, 2, 3072},
 		{"32GB sys 2 nodes", 32768, 0, 2, 4050},
-		{"odd sys 2 nodes", 14567, 0, 2, 2200},
-		{"4GB sys 2 nodes", 4096, 0, 2, 2200},
+		{"odd sys 2 nodes", 14567, 0, 2, 3072},
+		{"4GB sys 2 nodes", 4096, 0, 2, 3072},
 		{"2GB sys 3 nodes", 2048, 0, 3, 2048},
 	}
 	for _, test := range tests {
@@ -814,7 +815,7 @@ func TestValidateGPUs(t *testing.T) {
 		{"nvidia", "docker", "", ""},
 		{"all", "kvm", "docker", "The gpus flag can only be used with the docker driver and docker container-runtime"},
 		{"nvidia", "docker", "containerd", "The gpus flag can only be used with the docker driver and docker container-runtime"},
-		{"cat", "docker", "docker", `The gpus flag must be passed a value of "nvidia", "amd" or "all"`},
+		{"cat", "docker", "docker", `The gpus flag must be passed a value of "nvidia", "nvidia.com", "amd" or "all"`},
 		{"amd", "docker", "docker", ""},
 		{"amd", "docker", "", ""},
 		{"amd", "docker", "containerd", "The gpus flag can only be used with the docker driver and docker container-runtime"},
@@ -853,7 +854,7 @@ func TestValidateAutoPause(t *testing.T) {
 			t.Errorf("interval of %q failed validation; expected it to pass: %v", input, err)
 		}
 		if err == nil && tc.shouldError {
-			t.Errorf("interval of %q passed validataion; expected it to fail: %v", input, err)
+			t.Errorf("interval of %q passed validation; expected it to fail: %v", input, err)
 		}
 	}
 }

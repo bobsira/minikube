@@ -29,7 +29,6 @@ import (
 
 	"github.com/blang/semver/v4"
 	units "github.com/docker/go-units"
-	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/bootstrapper/images"
@@ -41,6 +40,7 @@ import (
 	"k8s.io/minikube/pkg/minikube/image"
 	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/minikube/sysinit"
+	"k8s.io/minikube/pkg/util/retry"
 )
 
 // KubernetesContainerPrefix is the prefix of each Kubernetes container
@@ -167,7 +167,7 @@ func (r *Docker) Enable(disOthers bool, cgroupDriver string, inUserNamespace boo
 		return err
 	}
 
-	if err := r.Init.Restart("docker"); err != nil {
+	if err := r.restartServiceWithExpoRetry("docker"); err != nil {
 		return err
 	}
 
@@ -197,9 +197,8 @@ func (r *Docker) Enable(disOthers bool, cgroupDriver string, inUserNamespace boo
 			return err
 		}
 
-		// try to restart service if stopped, intentionally continue on any error
-		if !r.Init.Active(service) {
-			_ = r.Init.Restart(service)
+		if err := r.restartServiceWithExpoRetry(service); err != nil {
+			return err
 		}
 	}
 
@@ -208,6 +207,7 @@ func (r *Docker) Enable(disOthers bool, cgroupDriver string, inUserNamespace boo
 
 // Restart restarts Docker on a host
 func (r *Docker) Restart() error {
+	_ = r.Init.ResetFailed("docker")
 	return r.Init.Restart("docker")
 }
 
@@ -261,10 +261,13 @@ func (r *Docker) ImageExists(name string, sha string) bool {
 
 // ListImages returns a list of images managed by this container runtime
 func (r *Docker) ListImages(ListImagesOptions) ([]ListImage, error) {
+	if r.UseCRI {
+		return listCRIImages(r.Runner)
+	}
 	c := exec.Command("docker", "images", "--no-trunc", "--format", "{{json .}}")
 	rr, err := r.Runner.RunCmd(c)
 	if err != nil {
-		return nil, errors.Wrapf(err, "docker images")
+		return nil, fmt.Errorf("docker images: %w", err)
 	}
 	type dockerImage struct {
 		ID         string `json:"ID"`
@@ -272,20 +275,20 @@ func (r *Docker) ListImages(ListImagesOptions) ([]ListImage, error) {
 		Tag        string `json:"Tag"`
 		Size       string `json:"Size"`
 	}
-	images := strings.Split(rr.Stdout.String(), "\n")
+	imgs := strings.Split(rr.Stdout.String(), "\n")
 	result := []ListImage{}
-	for _, img := range images {
+	for _, img := range imgs {
 		if img == "" {
 			continue
 		}
 
 		var jsonImage dockerImage
 		if err := json.Unmarshal([]byte(img), &jsonImage); err != nil {
-			return nil, errors.Wrap(err, "Image convert problem")
+			return nil, fmt.Errorf("Image convert problem: %w", err)
 		}
 		size, err := units.FromHumanSize(jsonImage.Size)
 		if err != nil {
-			return nil, errors.Wrap(err, "Image size convert problem")
+			return nil, fmt.Errorf("Image size convert problem: %w", err)
 		}
 
 		repoTag := fmt.Sprintf("%s:%s", jsonImage.Repository, jsonImage.Tag)
@@ -300,11 +303,11 @@ func (r *Docker) ListImages(ListImagesOptions) ([]ListImage, error) {
 }
 
 // LoadImage loads an image into this runtime
-func (r *Docker) LoadImage(path string) error {
-	klog.Infof("Loading image: %s", path)
-	c := exec.Command("/bin/bash", "-c", fmt.Sprintf("sudo cat %s | docker load", path))
+func (r *Docker) LoadImage(imgPath string) error {
+	klog.Infof("Loading image: %s", imgPath)
+	c := exec.Command("/bin/bash", "-c", fmt.Sprintf("sudo cat %s | docker load", imgPath))
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "loadimage docker")
+		return fmt.Errorf("loadimage docker: %w", err)
 	}
 	return nil
 }
@@ -317,17 +320,17 @@ func (r *Docker) PullImage(name string) error {
 	}
 	c := exec.Command("docker", "pull", name)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "pull image docker")
+		return fmt.Errorf("pull image docker: %w", err)
 	}
 	return nil
 }
 
 // SaveImage saves an image from this runtime
-func (r *Docker) SaveImage(name string, path string) error {
-	klog.Infof("Saving image %s: %s", name, path)
-	c := exec.Command("/bin/bash", "-c", fmt.Sprintf("docker save '%s' | sudo tee %s >/dev/null", name, path))
+func (r *Docker) SaveImage(name string, imagePath string) error {
+	klog.Infof("Saving image %s: %s", name, imagePath)
+	c := exec.Command("/bin/bash", "-c", fmt.Sprintf("docker save '%s' | sudo tee %s >/dev/null", name, imagePath))
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "saveimage docker")
+		return fmt.Errorf("saveimage docker: %w", err)
 	}
 	return nil
 }
@@ -336,11 +339,11 @@ func (r *Docker) SaveImage(name string, path string) error {
 func (r *Docker) RemoveImage(name string) error {
 	klog.Infof("Removing image: %s", name)
 	if r.UseCRI {
-		return removeCRIImage(r.Runner, name)
+		return removeCRIImage(r.Runner, name, false)
 	}
 	c := exec.Command("docker", "rmi", name)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "remove image docker")
+		return fmt.Errorf("remove image docker: %w", err)
 	}
 	return nil
 }
@@ -350,7 +353,7 @@ func (r *Docker) TagImage(source string, target string) error {
 	klog.Infof("Tagging image %s: %s", source, target)
 	c := exec.Command("docker", "tag", source, target)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "tag image docker")
+		return fmt.Errorf("tag image docker: %w", err)
 	}
 	return nil
 }
@@ -376,14 +379,14 @@ func (r *Docker) BuildImage(src string, file string, tag string, push bool, env 
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "buildimage docker")
+		return fmt.Errorf("buildimage docker: %w", err)
 	}
 	if tag != "" && push {
 		c := exec.Command("docker", "push", tag)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		if _, err := r.Runner.RunCmd(c); err != nil {
-			return errors.Wrap(err, "pushimage docker")
+			return fmt.Errorf("pushimage docker: %w", err)
 		}
 	}
 	return nil
@@ -394,7 +397,7 @@ func (r *Docker) PushImage(name string) error {
 	klog.Infof("Pushing image: %s", name)
 	c := exec.Command("docker", "push", name)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "push image docker")
+		return fmt.Errorf("push image docker: %w", err)
 	}
 	return nil
 }
@@ -444,7 +447,7 @@ func (r *Docker) ListContainers(o ListContainersOptions) ([]string, error) {
 	args = append(args, fmt.Sprintf("--filter=name=%s", nameFilter), "--format={{.ID}}")
 	rr, err := r.Runner.RunCmd(exec.Command("docker", args...))
 	if err != nil {
-		return nil, errors.Wrapf(err, "docker")
+		return nil, fmt.Errorf("docker: %w", err)
 	}
 	var ids []string
 	for _, line := range strings.Split(rr.Stdout.String(), "\n") {
@@ -467,7 +470,7 @@ func (r *Docker) KillContainers(ids []string) error {
 	args := append([]string{"rm", "-f"}, ids...)
 	c := exec.Command("docker", args...)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "killing containers docker")
+		return fmt.Errorf("killing containers docker: %w", err)
 	}
 	return nil
 }
@@ -484,7 +487,7 @@ func (r *Docker) StopContainers(ids []string) error {
 	args := append([]string{"stop"}, ids...)
 	c := exec.Command("docker", args...)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "docker")
+		return fmt.Errorf("docker: %w", err)
 	}
 	return nil
 }
@@ -501,7 +504,7 @@ func (r *Docker) PauseContainers(ids []string) error {
 	args := append([]string{"pause"}, ids...)
 	c := exec.Command("docker", args...)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "docker")
+		return fmt.Errorf("docker: %w", err)
 	}
 	return nil
 }
@@ -518,7 +521,7 @@ func (r *Docker) UnpauseContainers(ids []string) error {
 	args := append([]string{"unpause"}, ids...)
 	c := exec.Command("docker", args...)
 	if _, err := r.Runner.RunCmd(c); err != nil {
-		return errors.Wrap(err, "docker")
+		return fmt.Errorf("docker: %w", err)
 	}
 	return nil
 }
@@ -581,13 +584,14 @@ func (r *Docker) configureDocker(driver string) error {
 		StorageDriver: "overlay2",
 	}
 
-	if r.GPUs == "all" || r.GPUs == "nvidia" {
+	switch r.GPUs {
+	case "all", "nvidia", "nvidia.com":
 		assets.Addons["nvidia-device-plugin"].EnableByDefault()
 		daemonConfig.DefaultRuntime = "nvidia"
 		runtimes := &dockerDaemonRuntimes{}
 		runtimes.Nvidia.Path = "/usr/bin/nvidia-container-runtime"
 		daemonConfig.Runtimes = runtimes
-	} else if r.GPUs == "amd" {
+	case "amd":
 		assets.Addons["amd-gpu-device-plugin"].EnableByDefault()
 	}
 
@@ -611,11 +615,11 @@ func (r *Docker) Preload(cc config.ClusterConfig) error {
 	cRuntime := cc.KubernetesConfig.ContainerRuntime
 
 	// If images already exist, return
-	images, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
+	imgs, err := images.Kubeadm(cc.KubernetesConfig.ImageRepository, k8sVersion)
 	if err != nil {
-		return errors.Wrap(err, "getting images")
+		return fmt.Errorf("getting images: %w", err)
 	}
-	if dockerImagesPreloaded(r.Runner, images) {
+	if dockerImagesPreloaded(r.Runner, imgs) {
 		klog.Info("Images already preloaded, skipping extraction")
 		return nil
 	}
@@ -638,7 +642,7 @@ func (r *Docker) Preload(cc config.ClusterConfig) error {
 	// Copy over tarball into host
 	fa, err := assets.NewFileAsset(tarballPath, targetDir, targetName, "0644")
 	if err != nil {
-		return errors.Wrap(err, "getting file asset")
+		return fmt.Errorf("getting file asset: %w", err)
 	}
 	defer func() {
 		if err := fa.Close(); err != nil {
@@ -648,13 +652,13 @@ func (r *Docker) Preload(cc config.ClusterConfig) error {
 
 	t := time.Now()
 	if err := r.Runner.Copy(fa); err != nil {
-		return errors.Wrap(err, "copying file")
+		return fmt.Errorf("copying file: %w", err)
 	}
 	klog.Infof("duration metric: took %s to copy over tarball", time.Since(t))
 
 	// extract the tarball to /var in the VM
 	if rr, err := r.Runner.RunCmd(exec.Command("sudo", "tar", "--xattrs", "--xattrs-include", "security.capability", "-I", "lz4", "-C", "/var", "-xf", dest)); err != nil {
-		return errors.Wrapf(err, "extracting tarball: %s", rr.Output())
+		return fmt.Errorf("extracting tarball: %s: %w", rr.Output(), err)
 	}
 
 	//  remove the tarball in the VM
@@ -674,7 +678,7 @@ func (r *Docker) Preload(cc config.ClusterConfig) error {
 }
 
 // dockerImagesPreloaded returns true if all images have been preloaded
-func dockerImagesPreloaded(runner command.Runner, images []string) bool {
+func dockerImagesPreloaded(runner command.Runner, imgs []string) bool {
 	rr, err := runner.RunCmd(exec.Command("docker", "images", "--format", "{{.Repository}}:{{.Tag}}"))
 	if err != nil {
 		klog.Warning(err)
@@ -689,7 +693,7 @@ func dockerImagesPreloaded(runner command.Runner, images []string) bool {
 	klog.Infof("Got preloaded images: %s", rr.Output())
 
 	// Make sure images == imgs
-	for _, i := range images {
+	for _, i := range imgs {
 		i = image.TrimDockerIO(i)
 		if _, ok := preloadedImages[i]; !ok {
 			klog.Infof("%s wasn't preloaded", i)
@@ -746,8 +750,8 @@ func dockerBoundToContainerd(runner command.Runner) bool {
 }
 
 // ImagesPreloaded returns true if all images have been preloaded
-func (r *Docker) ImagesPreloaded(images []string) bool {
-	return dockerImagesPreloaded(r.Runner, images)
+func (r *Docker) ImagesPreloaded(imgs []string) bool {
+	return dockerImagesPreloaded(r.Runner, imgs)
 }
 
 const (
@@ -797,16 +801,33 @@ ExecStart={{.ExecPath}} --container-runtime-endpoint fd:// --pod-infra-container
 
 	b := bytes.Buffer{}
 	if err := CRIDockerServiceConfTemplate.Execute(&b, opts); err != nil {
-		return errors.Wrap(err, "failed to execute template")
+		return fmt.Errorf("failed to execute template: %w", err)
 	}
 	criDockerService := b.Bytes()
 	c := exec.Command("sudo", "mkdir", "-p", path.Dir(CRIDockerServiceConfFile))
 	if _, err := cr.RunCmd(c); err != nil {
-		return errors.Wrapf(err, "failed to create directory")
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
 	svc := assets.NewMemoryAssetTarget(criDockerService, CRIDockerServiceConfFile, "0644")
 	if err := cr.Copy(svc); err != nil {
-		return errors.Wrap(err, "failed to copy template")
+		return fmt.Errorf("failed to copy template: %w", err)
 	}
 	return nil
+}
+
+func (r *Docker) restartServiceWithExpoRetry(service string) error {
+	_ = r.Init.ResetFailed(service)
+	_ = r.Init.Restart(service)
+	// try to restart service if stopped, restart until it works
+	return retry.Expo(
+		func() error {
+			if !r.Init.Active(service) {
+				r.Init.ResetFailed(service)
+				r.Init.Restart(service)
+				return fmt.Errorf("%s not running", service)
+			}
+			return nil
+		},
+		1*time.Second, time.Minute, 5,
+	)
 }

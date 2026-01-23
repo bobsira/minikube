@@ -4,8 +4,8 @@
 #   
 ################################################################################
 
-DOCKER_BUILDX_VERSION = v0.17.1
-DOCKER_BUILDX_COMMIT = 257815a6fbaee88976808020bf04274388275ae8
+DOCKER_BUILDX_VERSION = v0.30.1
+DOCKER_BUILDX_COMMIT = 9e66234aa13328a5e75b75aa5574e1ca6d6d9c01
 DOCKER_BUILDX_SITE = https://github.com/docker/buildx/archive
 DOCKER_BUILDX_SOURCE = $(DOCKER_BUILDX_VERSION).tar.gz
 DOCKER_BUILDX_GOPATH = $(@D)/_output
@@ -16,7 +16,10 @@ DOCKER_BUILDX_ENV = \
         GOPATH="$(DOCKER_BUILDX_GOPATH)" \
         GOBIN="$(DOCKER_BUILDX_GOPATH)/bin" \
         PATH=$(DOCKER_BUILDX_GOPATH)/bin:$(BR_PATH) \
-        GOARCH=amd64
+        GOARCH=amd64 \
+        GOPROXY="https://proxy.golang.org,direct" \
+	GOSUMDB='sum.golang.org'\
+	GOOS=linux
 
 DOCKER_BUILDX_COMPILE_SRC = $(DOCKER_BUILDX_GOPATH)/src/github.com/docker/buildx
 

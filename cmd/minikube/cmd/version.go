@@ -18,13 +18,15 @@ package cmd
 
 import (
 	"encoding/json"
+	"maps"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 	"k8s.io/klog/v2"
+	"k8s.io/minikube/cmd/minikube/cmd/flags"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/mustload"
 	"k8s.io/minikube/pkg/minikube/out"
@@ -43,6 +45,7 @@ var versionCmd = &cobra.Command{
 	Short: "Print the version of minikube",
 	Long:  `Print the version of minikube.`,
 	Run: func(_ *cobra.Command, _ []string) {
+		options := flags.CommandOptions()
 		minikubeVersion := version.GetVersion()
 		gitCommitID := version.GetGitCommitID()
 		data := map[string]interface{}{
@@ -51,7 +54,7 @@ var versionCmd = &cobra.Command{
 		}
 
 		if listComponentsVersions && !shortVersion {
-			co := mustload.Running(ClusterFlagValue())
+			co := mustload.Running(ClusterFlagValue(), options)
 			runner := co.CP.Runner
 			versionCMDS := map[string]*exec.Cmd{
 				"docker":      exec.Command("docker", "--version"),
@@ -89,11 +92,7 @@ var versionCmd = &cobra.Command{
 				if gitCommitID != "" {
 					out.Ln("commit: %v", gitCommitID)
 				}
-				keys := make([]string, 0, len(data))
-				for k := range data {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
+				keys := slices.Sorted(maps.Keys(data))
 				for _, k := range keys {
 					v := data[k]
 					// for backward compatibility we keep displaying the old way for these two
