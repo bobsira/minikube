@@ -6,10 +6,13 @@ on:
   workflow_dispatch:
   # pull_request_target runs in the context of the base repo, allowing access to secrets
   # unlike pull_request which runs in the context of the merge commit
-  # every commit needs re-labeling "ok-to-extra-test" label by OWNERS 
+  # every commit needs re-labeling "ok-to-extra-test" label by OWNERS
   # that ensures unvetted code will not run this test
   pull_request_target:
     types: [labeled]
+  push:
+    branches:
+      - ci/windows-self-hosted-runner
 
 
 jobs:
@@ -197,3 +200,58 @@ jobs:
         run: |
           echo "Verifying cleanup..."
           az resource list --resource-group "${{ env.MINIKUBE_AZ_RESOURCE_GROUP }}" --query "[].{Name:name, Type:type, Created:createdTime}" --output table
+
+  windows-node-selfhosted:
+    if: |
+      (github.repository == 'kubernetes/minikube' && (
+        (github.event_name == 'pull_request_target' && contains(github.event.pull_request.labels.*.name, 'ok-to-extra-test')) ||
+        (github.event_name == 'schedule' && github.ref == 'refs/heads/master') ||
+        github.event_name == 'workflow_dispatch'
+      )) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/ci/windows-self-hosted-runner')
+    runs-on: [self-hosted, windows, hyper-v]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build binaries
+        run: |
+          make e2e-windows-amd64.exe
+          make minikube-windows-amd64.exe
+
+      - name: Install Gopogh
+        uses: ./.github/actions/install-gopogh
+
+      - name: Run TestWindowsNode
+        run: |
+          $env:Path += ';C:\Program Files\Go\bin;C:\ProgramData\chocolatey\bin'
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+
+          ./out/e2e-windows-amd64.exe `
+            --minikube-start-args='--driver=hyperv' `
+            --binary=./out/minikube-windows-amd64.exe `
+            '-test.run' TestWindowsNode `
+            '-test.v' `
+            '-test.timeout=90m' | Tee-Object -FilePath testout.txt
+
+          $env:result = $lastexitcode
+          Get-Content testout.txt | go tool test2json -t | Out-File -Encoding UTF8 testout.json
+          if ($env:result -eq 0) { echo 'minikube: SUCCESS' } else { echo 'minikube: FAIL' }
+          exit $env:result
+
+      - name: Generate Gopogh HTML Report
+        uses: ./.github/actions/generate-report
+        if: always()
+        with:
+          json_report_path: './testout.json'
+          report_dir: './report'
+          report_title: "Windows Node Self-Hosted ${GITHUB_REF}"
+          artifact_name_suffix: "windows-node-selfhosted"
+          check_strict: 'true'
