@@ -227,9 +227,6 @@ jobs:
           make e2e-windows-amd64.exe
           make minikube-windows-amd64.exe
 
-      - name: Install Gopogh
-        uses: ./.github/actions/install-gopogh
-
       - name: Run TestWindowsNode
         run: |
           $env:Path += ';C:\Program Files\Go\bin;C:\ProgramData\chocolatey\bin'
@@ -243,16 +240,13 @@ jobs:
             '-test.timeout=90m' | Tee-Object -FilePath testout.txt
 
           $env:result = $lastexitcode
-          Get-Content testout.txt | go tool test2json -t | Out-File -Encoding UTF8 testout.json
           if ($env:result -eq 0) { echo 'minikube: SUCCESS' } else { echo 'minikube: FAIL' }
           exit $env:result
 
-      - name: Generate Gopogh HTML Report
-        uses: ./.github/actions/generate-report
+      - name: Upload test output
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          json_report_path: './testout.json'
-          report_dir: './report'
-          report_title: "Windows Node Self-Hosted ${GITHUB_REF}"
-          artifact_name_suffix: "windows-node-selfhosted"
-          check_strict: 'true'
+          name: windows-node-selfhosted-results
+          path: testout.txt
+      # TODO: add Gopogh HTML report once install-gopogh action supports Windows
