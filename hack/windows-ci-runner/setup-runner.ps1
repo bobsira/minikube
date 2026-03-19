@@ -53,11 +53,11 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Write-Host "Installing Chocolatey..."
     Set-ExecutionPolicy Bypass -Scope Process -Force
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 }
 
-Write-Host "Installing Go and kubectl..."
-& C:\ProgramData\chocolatey\bin\choco install golang kubernetes-cli -y
+Write-Host "Installing Go, kubectl, Git, and make..."
+& C:\ProgramData\chocolatey\bin\choco install golang kubernetes-cli git make -y
 
 Write-Host "Updating machine PATH..."
 $machinePath = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine')
