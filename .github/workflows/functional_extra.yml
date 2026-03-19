@@ -222,6 +222,7 @@ jobs:
           cache: true
 
       - name: Build binaries
+        shell: bash
         run: |
           make e2e-windows-amd64.exe
           make minikube-windows-amd64.exe
