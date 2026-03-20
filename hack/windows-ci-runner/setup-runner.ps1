@@ -149,6 +149,20 @@ if ($LASTEXITCODE -ne 0) {
 
 Pop-Location
 
+# ---------------------------------------------------------------------------
+# 5. Configure the runner service to run as LocalSystem for Hyper-V access
+# ---------------------------------------------------------------------------
+# The default service account (NT AUTHORITY\NETWORK SERVICE) cannot access
+# Hyper-V. LocalSystem has the required privileges.
+$serviceName = "actions.runner.$($repoPath -replace '/', '-').$RunnerName"
+Write-Host "Configuring runner service '$serviceName' to run as LocalSystem..."
+sc.exe config $serviceName obj= "LocalSystem"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to reconfigure service account (exit code $LASTEXITCODE)."
+}
+Restart-Service $serviceName
+Write-Host "Runner service restarted as LocalSystem."
+
 Write-Host ""
 Write-Host "Runner '$RunnerName' is registered and running."
 Write-Host "Labels: self-hosted, windows, hyper-v, windows-2022"

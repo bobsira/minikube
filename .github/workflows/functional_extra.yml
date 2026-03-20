@@ -215,6 +215,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
+      - name: Mark workspace as git safe directory
+        shell: powershell
+        run: git config --global --add safe.directory $env:GITHUB_WORKSPACE
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
