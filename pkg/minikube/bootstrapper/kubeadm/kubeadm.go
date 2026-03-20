@@ -852,7 +852,7 @@ func (k *Bootstrapper) JoinCluster(cc config.ClusterConfig, n config.Node, joinC
 }
 
 // GenerateTokenWindows creates a token and returns the appropriate kubeadm join command to run, or the already existing token
-func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, error) {
+func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig, n config.Node) (string, error) {
 	tokenCmd := exec.Command("sudo", "/bin/bash", "-c", fmt.Sprintf("%s token create --print-join-command --ttl=0", bsutil.KubeadmCmdWithPath(cc.KubernetesConfig.KubernetesVersion)))
 	r, err := k.c.RunCmd(tokenCmd)
 	if err != nil {
@@ -864,6 +864,10 @@ func (k *Bootstrapper) GenerateTokenWindows(cc config.ClusterConfig) (string, er
 	klog.Infof("Generated join command ===: %s", joinCmd)
 	joinCmd = strings.Replace(joinCmd, "kubeadm", ".\\kubeadm.exe", 1)
 	joinCmd = fmt.Sprintf("%s --ignore-preflight-errors=all", strings.TrimSpace(joinCmd))
+
+	// set the node name explicitly so it matches the minikube machine name
+	// (the Windows VHD hostname may differ from the expected <profile>-m02 name)
+	joinCmd = fmt.Sprintf("%s --node-name %s", joinCmd, config.MachineName(cc, n))
 
 	// append the cri-socket flag to the join command for windows
 	joinCmd = fmt.Sprintf("%s --cri-socket \"npipe:////./pipe/containerd-containerd\"", joinCmd)

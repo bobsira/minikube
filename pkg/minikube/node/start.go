@@ -392,7 +392,7 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 
 	// if node is a windows node, generate the join command
 	if starter.Node.Guest.Name == "windows" {
-		joinCmd, err = cpBs.GenerateTokenWindows(*starter.Cfg)
+		joinCmd, err = cpBs.GenerateTokenWindows(*starter.Cfg, *starter.Node)
 		if err != nil {
 			return fmt.Errorf("error generating join token: %w", err)
 		}
@@ -469,8 +469,19 @@ func joinCluster(starter Starter, cpBs bootstrapper.Bootstrapper, bs bootstrappe
 		}
 	}
 
-	if err := cpBs.LabelAndUntaintNode(*starter.Cfg, *starter.Node); err != nil {
-		return fmt.Errorf("error applying %s node %q label: %w", role, starter.Node.Name, err)
+	// Windows nodes take extra time to register with the API server after kubeadm
+	// join returns. Retry labeling until the node object appears (up to 3 minutes).
+	labelFn := func() error {
+		return cpBs.LabelAndUntaintNode(*starter.Cfg, *starter.Node)
+	}
+	if starter.Node.Guest.Name == "windows" {
+		if err := retry.Expo(labelFn, 5*time.Second, 3*time.Minute); err != nil {
+			return fmt.Errorf("error applying %s node %q label: %w", role, starter.Node.Name, err)
+		}
+	} else {
+		if err := labelFn(); err != nil {
+			return fmt.Errorf("error applying %s node %q label: %w", role, starter.Node.Name, err)
+		}
 	}
 
 	return nil
