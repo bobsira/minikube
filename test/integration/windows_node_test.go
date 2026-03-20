@@ -90,6 +90,9 @@ func validateWindowsNodeStart(ctx context.Context, t *testing.T, profile string)
 	if vhdURL := os.Getenv("WINDOWS_VHD_URL"); vhdURL != "" {
 		args = append(args, "--windows-vhd-url="+vhdURL)
 	}
+	if vsw := os.Getenv("HYPERV_VIRTUAL_SWITCH"); vsw != "" {
+		args = append(args, "--hyperv-virtual-switch="+vsw)
+	}
 
 	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
 	if err != nil {

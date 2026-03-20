@@ -232,6 +232,8 @@ jobs:
           make minikube-windows-amd64.exe
 
       - name: Run TestWindowsNode
+        env:
+          HYPERV_VIRTUAL_SWITCH: ExternalSwitch
         run: |
           $env:Path += ';C:\Program Files\Go\bin;C:\ProgramData\chocolatey\bin'
           $OutputEncoding = [System.Text.Encoding]::UTF8
