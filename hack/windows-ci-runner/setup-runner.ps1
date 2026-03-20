@@ -71,7 +71,37 @@ foreach ($entry in $additions) {
 $env:PATH = "$env:PATH;C:\ProgramData\chocolatey\bin;C:\Program Files\Go\bin"
 
 # ---------------------------------------------------------------------------
-# 1. Resolve the latest runner version from the GitHub releases API
+# 1. Create Hyper-V Internal Switch + ICS for minikube
+# ---------------------------------------------------------------------------
+# Azure SDN filters packets by MAC address, so an External switch does not
+# work for nested VMs (DHCP responses are dropped). Instead we create an
+# Internal switch and enable Internet Connection Sharing (ICS) on the host,
+# which provides both NAT and a DHCP server (192.168.137.0/24) for guests.
+Write-Host "Configuring Hyper-V Internal Switch with ICS for minikube..."
+$existingSwitch = Get-VMSwitch -Name 'InternalSwitch' -ErrorAction SilentlyContinue
+if (-not $existingSwitch) {
+    Write-Host "Creating InternalSwitch..."
+    New-VMSwitch -Name 'InternalSwitch' -SwitchType Internal
+} else {
+    Write-Host "InternalSwitch already exists, skipping creation."
+}
+
+Write-Host "Enabling Internet Connection Sharing (ICS)..."
+$netShare = New-Object -ComObject HNetCfg.HNetShare.1
+$ethConn = $null; $intConn = $null
+foreach ($conn in $netShare.EnumEveryConnection) {
+    $name = $netShare.NetConnectionProps.Invoke($conn).Name
+    if ($name -eq 'Ethernet')                   { $ethConn = $conn }
+    if ($name -eq 'vEthernet (InternalSwitch)') { $intConn = $conn }
+}
+if (-not $ethConn) { throw "Could not find 'Ethernet' adapter for ICS." }
+if (-not $intConn) { throw "Could not find 'vEthernet (InternalSwitch)' adapter for ICS." }
+$netShare.INetSharingConfigurationForINetConnection.Invoke($ethConn).EnableSharing(0)
+$netShare.INetSharingConfigurationForINetConnection.Invoke($intConn).EnableSharing(1)
+Write-Host "ICS configured. DHCP range: 192.168.137.0/24"
+
+# ---------------------------------------------------------------------------
+# 2. Resolve the latest runner version from the GitHub releases API
 # ---------------------------------------------------------------------------
 Write-Host "Fetching latest GitHub Actions runner version..."
 $releaseInfo = Invoke-RestMethod -Uri 'https://api.github.com/repos/actions/runner/releases/latest' -UseBasicParsing
@@ -79,7 +109,7 @@ $runnerVersion = $releaseInfo.tag_name.TrimStart('v')
 Write-Host "Latest runner version: $runnerVersion"
 
 # ---------------------------------------------------------------------------
-# 2. Download and extract runner package
+# 3. Download and extract runner package
 # ---------------------------------------------------------------------------
 $downloadUrl = "https://github.com/actions/runner/releases/download/v${runnerVersion}/actions-runner-win-x64-${runnerVersion}.zip"
 $zipPath = "$env:TEMP\actions-runner.zip"
@@ -111,7 +141,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Remove-Item $zipPath
 
 # ---------------------------------------------------------------------------
-# 3. Obtain a short-lived runner registration token via GitHub API
+# 4. Obtain a short-lived runner registration token via GitHub API
 # ---------------------------------------------------------------------------
 Write-Host "Requesting runner registration token..."
 $apiHeaders = @{
@@ -127,7 +157,7 @@ $tokenResponse = Invoke-RestMethod `
 $registrationToken = $tokenResponse.token
 
 # ---------------------------------------------------------------------------
-# 4. Configure the runner
+# 5. Configure the runner
 # ---------------------------------------------------------------------------
 Push-Location $RunnerDir
 
@@ -150,7 +180,7 @@ if ($LASTEXITCODE -ne 0) {
 Pop-Location
 
 # ---------------------------------------------------------------------------
-# 5. Configure the runner service to run as LocalSystem for Hyper-V access
+# 6. Configure the runner service to run as LocalSystem for Hyper-V access
 # ---------------------------------------------------------------------------
 # The default service account (NT AUTHORITY\NETWORK SERVICE) cannot access
 # Hyper-V. LocalSystem has the required privileges.

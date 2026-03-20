@@ -233,7 +233,7 @@ jobs:
 
       - name: Run TestWindowsNode
         env:
-          HYPERV_VIRTUAL_SWITCH: ExternalSwitch
+          HYPERV_VIRTUAL_SWITCH: InternalSwitch
         run: |
           $env:Path += ';C:\Program Files\Go\bin;C:\ProgramData\chocolatey\bin'
           $OutputEncoding = [System.Text.Encoding]::UTF8
