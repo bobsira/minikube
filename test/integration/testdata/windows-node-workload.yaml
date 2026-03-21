@@ -38,7 +38,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: windowswebserver
-          image: mcr.microsoft.com/windows/servercore:ltsc2022
+          image: mcr.microsoft.com/windows/servercore:ltsc2025
           resources:
             requests:
               cpu: "100m"

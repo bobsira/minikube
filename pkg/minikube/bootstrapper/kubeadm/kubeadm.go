@@ -507,8 +507,11 @@ func (k *Bootstrapper) WaitForNode(cfg config.ClusterConfig, n config.Node, time
 	out.Step(style.HealthCheck, "Verifying Kubernetes components...")
 	// regardless if waiting is set or not, we will make sure kubelet is not stopped
 	// to solve corner cases when a container is hibernated and once coming back kubelet not running.
-	if err := sysinit.New(k.c).Start("kubelet"); err != nil {
-		klog.Warningf("Couldn't ensure kubelet is started this might cause issues: %v", err)
+	// Windows nodes use Windows services (not systemd), so skip sysinit-based kubelet management.
+	if n.Guest.Name != "windows" {
+		if err := sysinit.New(k.c).Start("kubelet"); err != nil {
+			klog.Warningf("Couldn't ensure kubelet is started this might cause issues: %v", err)
+		}
 	}
 	// TODO: #7706: for better performance we could use k.client inside minikube to avoid asking for external IP:PORT
 	cp, err := config.ControlPlane(cfg)
@@ -578,7 +581,8 @@ func (k *Bootstrapper) WaitForNode(cfg config.ClusterConfig, n config.Node, time
 		}
 	}
 
-	if cfg.VerifyComponents[kverify.KubeletKey] {
+	// Windows nodes use Windows services (not systemd); systemctl is unavailable so skip.
+	if cfg.VerifyComponents[kverify.KubeletKey] && n.Guest.Name != "windows" {
 		if err := kverify.WaitForService(k.c, "kubelet", timeout); err != nil {
 			return fmt.Errorf("waiting for kubelet: %w", err)
 		}
