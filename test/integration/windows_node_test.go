@@ -70,6 +70,11 @@ func TestWindowsNode(t *testing.T) {
 			{"WebServerConnectivity", validateWebServerConnectivity},
 		}
 		startPassed := false
+		defer func() {
+			if startPassed {
+				logWindowsRuntimeDiagnostics(t, profile, true)
+			}
+		}()
 		for _, tc := range tests {
 			tc := tc
 			if tc.name != "Start" && !startPassed {
@@ -89,6 +94,49 @@ func TestWindowsNode(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Capture the eventual image-pull outcome before cleanup, even when the workload's wait timed out.
+func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if includeLogs {
+		for _, args := range [][]string{
+			{"get", "nodes", "-o", "json"},
+			{"get", "pods", "-l", "app=win-webserver", "-o", "json"},
+			{"get", "events", "--field-selector=involvedObject.kind=Pod", "-o", "json"},
+		} {
+			cmd := exec.CommandContext(ctx, KubectlBinary(), append([]string{"--context", profile}, args...)...)
+			rr, err := Run(t, cmd)
+			if err != nil {
+				t.Logf("WARNING: Windows workload diagnostics failed: %v", err)
+				continue
+			}
+			t.Logf("Windows workload diagnostics:\n%s", rr.Output())
+		}
+	}
+
+	script, err := os.ReadFile("./testdata/windows-node-diagnostics.ps1")
+	if err != nil {
+		t.Logf("WARNING: reading Windows runtime diagnostics: %v", err)
+		return
+	}
+	command := "& ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+	if includeLogs {
+		command += " -IncludeLogs"
+	}
+	cmd := exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "exec", "-i", "-n", "kube-system", "daemonset/kube-proxy-windows", "--",
+		"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd.Stdin = strings.NewReader(string(script))
+	rr, err := Run(t, cmd)
+	if err != nil {
+		t.Logf("WARNING: collecting Windows runtime diagnostics: %v", err)
+		return
+	}
+	t.Logf("Windows runtime diagnostics:\n%s", rr.Output())
 }
 
 // windowsNodeName returns the name of the Windows worker node in the cluster.
@@ -353,6 +401,8 @@ func validateWindowsContainerdConfig(ctx context.Context, t *testing.T, profile 
 // Windows node and waits for it to reach Running state.
 func validateWindowsWorkload(ctx context.Context, t *testing.T, profile string) {
 	t.Helper()
+
+	logWindowsRuntimeDiagnostics(t, profile, false)
 
 	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
 		"--context", profile, "apply", "-f", "./testdata/windows-node-workload.yaml"))

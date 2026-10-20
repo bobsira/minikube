@@ -362,6 +362,7 @@ jobs:
         run: |
           HOST="${{ env.VM_NAME }}.${{ env.AZURE_DEFAULTS_LOCATION }}.cloudapp.azure.com"
           USER="${{ env.ADMIN_USER }}"
+          echo "WINDOWS_NODE_TEST_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
           cat > run_tests.ps1 << 'PSEOF'
           $env:Path += ";C:\Windows";
@@ -405,6 +406,37 @@ jobs:
           else
             echo "WARNING: testout.txt not found - tests may not have completed or SCP failed"
           fi
+
+      - name: Collect Windows node VM metrics
+        if: always() && steps.create_vm.outcome == 'success' && env.WINDOWS_NODE_TEST_START != ''
+        run: |
+          mkdir -p report/diagnostics
+          VM_ID=$(az vm show \
+            --resource-group "${{ env.MINIKUBE_AZ_RESOURCE_GROUP }}" \
+            --name "${{ env.VM_NAME }}" --query id -o tsv)
+          az vm show --ids "$VM_ID" \
+            --query '{vmSize:hardwareProfile.vmSize,osDisk:storageProfile.osDisk}' \
+            -o json > report/diagnostics/azure-vm.json
+          DISK_ID=$(jq -r '.osDisk.managedDisk.id' report/diagnostics/azure-vm.json)
+          az disk show --ids "$DISK_ID" \
+            --query '{diskSizeGB:diskSizeGb,sku:sku.name,tier:tier,diskIOPSReadWrite:diskIOPSReadWrite,diskMBpsReadWrite:diskMBpsReadWrite}' \
+            -o json > report/diagnostics/azure-os-disk.json
+
+          END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          az monitor metrics list --resource "$VM_ID" \
+            --namespace Microsoft.Compute/virtualMachines \
+            --start-time "$WINDOWS_NODE_TEST_START" --end-time "$END" --interval PT1M \
+            --aggregation Average \
+            --metrics "Percentage CPU" "OS Disk IOPS Consumed Percentage" \
+              "OS Disk Bandwidth Consumed Percentage" "OS Disk Latency" "OS Disk Queue Depth" \
+              "OS Disk Read Operations/Sec" "OS Disk Write Operations/Sec" \
+              "OS Disk Read Bytes/sec" "OS Disk Write Bytes/sec" \
+            -o json > report/diagnostics/azure-cpu-disk.json
+          az monitor metrics list --resource "$VM_ID" \
+            --namespace Microsoft.Compute/virtualMachines \
+            --start-time "$WINDOWS_NODE_TEST_START" --end-time "$END" --interval PT1M \
+            --aggregation Total --metrics "Network In Total" "Network Out Total" \
+            -o json > report/diagnostics/azure-network.json
 
       - name: Generate Gopogh HTML Report
         uses: ./.github/actions/generate-report
