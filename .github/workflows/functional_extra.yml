@@ -368,7 +368,7 @@ jobs:
           $env:HYPERV_VIRTUAL_SWITCH = "Default Switch";
           $OutputEncoding = [System.Text.Encoding]::UTF8;
           Set-Location "C:\Users\minikubeadmin";
-          .\e2e-windows-amd64.exe --minikube-start-args="--driver=hyperv" --binary=.\minikube-windows-amd64.exe "-test.run" TestWindowsNode "-test.v" "-test.timeout=90m" | Tee-Object -FilePath testout.txt;
+          .\e2e-windows-amd64.exe --minikube-start-args="--driver=hyperv" --binary=.\minikube-windows-amd64.exe "-test.run" TestWindowsNode "-test.v" "-test.timeout=120m" | Tee-Object -FilePath testout.txt;
           $env:result = $lastexitcode;
           if ($env:result -eq 0) { Write-Output "minikube: SUCCESS" } else { Write-Output "minikube: FAIL" };
           exit $env:result

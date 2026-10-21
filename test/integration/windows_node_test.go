@@ -25,12 +25,15 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"k8s.io/minikube/pkg/minikube/localpath"
 )
 
 // TestWindowsNode validates a hybrid Linux+Windows minikube cluster using the Hyper-V driver.
@@ -52,7 +55,7 @@ func TestWindowsNode(t *testing.T) {
 
 	profile := UniqueProfileName("windows-node")
 	startedAt := time.Now().UTC()
-	ctx, cancel := context.WithTimeout(context.Background(), Minutes(90))
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(120))
 	defer cancel()
 	defer cleanupWindowsNode(t, profile)
 
@@ -69,6 +72,7 @@ func TestWindowsNode(t *testing.T) {
 			{"KubeletArgs", validateWindowsKubeletArgs},
 			{"NodeCertificates", validateWindowsNodeCertificates},
 			{"ContainerdConfig", validateWindowsContainerdConfig},
+			{"WindowsImagePreparation", validateWindowsImagePreparation},
 			{"WindowsWorkload", validateWindowsWorkload},
 			{"LinuxWorkload", validateLinuxWorkload},
 			{"WorkloadsOnCorrectOS", validateWorkloadsOnCorrectOS},
@@ -76,13 +80,13 @@ func TestWindowsNode(t *testing.T) {
 			{"CrossNodeConnectivity", validateCrossNodePodConnectivity},
 			{"WebServerConnectivity", validateWebServerConnectivity},
 		}
-		startPassed := false
+		failedPrerequisite := ""
 		defer logWindowsRuntimeDiagnostics(t, profile, true, startedAt)
 		for _, tc := range tests {
 			tc := tc
-			if tc.name != "Start" && !startPassed {
+			if failedPrerequisite != "" {
 				t.Run(tc.name, func(t *testing.T) {
-					t.Skip("skipping because Start failed")
+					t.Skipf("skipping because %s failed", failedPrerequisite)
 				})
 				continue
 			}
@@ -92,8 +96,8 @@ func TestWindowsNode(t *testing.T) {
 				tc.validator(ctx, t, profile)
 			})
 
-			if tc.name == "Start" {
-				startPassed = passed
+			if !passed && (tc.name == "Start" || tc.name == "WindowsImagePreparation") {
+				failedPrerequisite = tc.name
 			}
 		}
 	})
@@ -107,13 +111,60 @@ func cleanupWindowsNode(t *testing.T, profile string) {
 		return
 	}
 
-	// Deleting both nested Hyper-V VMs can exceed the shared helper's two-minute budget.
-	ctx, cancel := context.WithTimeout(context.Background(), Minutes(5))
+	startedAt := time.Now().UTC()
+	if err := windowsCleanupDiagnostics(t, profile, startedAt, false); err != nil {
+		t.Logf("WARNING: pre-cleanup host diagnostics: %v", err)
+	}
+
+	// Allow five minutes per VM, independently of the workload's context.
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(10))
 	defer cancel()
 	t.Logf("Cleaning up %q profile ...", profile)
-	if _, err := Run(t, exec.CommandContext(ctx, Target(), "delete", "-p", profile)); err != nil {
+	rr, err := runWindowsCleanupCommand(t, exec.CommandContext(ctx, Target(),
+		"delete", "-p", profile, "-v=7", "--alsologtostderr"))
+	t.Logf("Windows cleanup output:\n%s", rr.Output())
+	if err != nil {
 		t.Errorf("failed cleanup of %q: %v (context: %v)", profile, err, ctx.Err())
 	}
+	if diagnosticErr := windowsCleanupDiagnostics(t, profile, startedAt, true); diagnosticErr != nil {
+		t.Errorf("failed cleanup verification of %q: %v", profile, diagnosticErr)
+	}
+}
+
+func runWindowsCleanupCommand(t *testing.T, cmd *exec.Cmd) (*RunResult, error) {
+	t.Helper()
+	cmd.Cancel = func() error {
+		killProcessFamily(t, cmd.Process.Pid)
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return Run(t, cmd)
+}
+
+func windowsCleanupDiagnostics(t *testing.T, profile string, startedAt time.Time, verifyDeleted bool) error {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("Windows cleanup verification requires a Windows host")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	args := []string{
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+		"-File", filepath.Join(*testdataDir, "windows-node-cleanup-diagnostics.ps1"),
+		"-Profile", profile, "-MinikubeHome", localpath.MiniPath(),
+		"-Since", startedAt.Format(time.RFC3339),
+	}
+	if verifyDeleted {
+		args = append(args, "-VerifyDeleted")
+	}
+	cmd := exec.CommandContext(ctx, "powershell.exe", args...)
+	cmd.WaitDelay = 5 * time.Second
+	rr, err := Run(t, cmd)
+	t.Logf("Windows host cleanup diagnostics (verifyDeleted=%t):\n%s", verifyDeleted, rr.Output())
+	if err != nil {
+		return fmt.Errorf("host cleanup diagnostics: %w (context: %v)", err, ctx.Err())
+	}
+	return nil
 }
 
 // Capture the eventual image-pull outcome before cleanup, even when the workload's wait timed out.
@@ -206,7 +257,8 @@ func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool
 func windowsDiagnosticPod(pod corev1.Pod) bool {
 	return (pod.Namespace == "kube-system" && pod.Labels["k8s-app"] == "kube-proxy-windows") ||
 		(pod.Namespace == "kube-flannel" && pod.Labels["app"] == "flannel") ||
-		(pod.Namespace == "default" && pod.Labels["app"] == "win-webserver")
+		(pod.Namespace == "default" && (pod.Labels["app"] == "win-webserver" ||
+			pod.Labels["app"] == "windows-image-preparation"))
 }
 
 // windowsNodeName returns the name of the Windows worker node in the cluster.
@@ -468,20 +520,37 @@ func validateWindowsContainerdConfig(ctx context.Context, t *testing.T, profile 
 	}
 }
 
+// validateWindowsImagePreparation isolates the cold image pull and unpack from HTTP readiness.
+func validateWindowsImagePreparation(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	logWindowsRuntimeDiagnostics(t, profile, false, time.Time{})
+	ctx, cancel := context.WithTimeout(ctx, Minutes(30))
+	defer cancel()
+	startedAt := time.Now()
+	defer func() { t.Logf("Windows image preparation took %s", time.Since(startedAt)) }()
+
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "apply", "-f", filepath.Join(*testdataDir, "windows-node-image-preparation.yaml"))); err != nil {
+		t.Fatalf("failed to apply Windows image preparation pod: %v", err)
+	}
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "wait", "--for=jsonpath={.status.phase}=Succeeded",
+		"pod/windows-image-preparation", "--timeout="+Minutes(30).String())); err != nil {
+		t.Fatalf("Windows image preparation did not complete: %v (context: %v)", err, ctx.Err())
+	}
+}
+
 // validateWindowsWorkload waits for both Windows web-server replicas to pass HTTP readiness.
 func validateWindowsWorkload(ctx context.Context, t *testing.T, profile string) {
 	t.Helper()
 
-	logWindowsRuntimeDiagnostics(t, profile, false, time.Time{})
-
 	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
-		"--context", profile, "apply", "-f", "./testdata/windows-node-workload.yaml"))
+		"--context", profile, "apply", "-f", filepath.Join(*testdataDir, "windows-node-workload.yaml")))
 	if err != nil {
 		t.Fatalf("failed to apply windows workload: %v\n%s", err, rr.Stderr.String())
 	}
 
-	// Windows containers can take many minutes to pull and start on first run — the
-	// Windows Server Core image is several GB and cold pulls on Azure VMs can exceed 15m.
+	// Image preparation has its own budget; this wait still requires both HTTP-ready replicas.
 	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
 		"--context", profile, "rollout", "status", "deployment/win-webserver",
 		"--timeout="+Minutes(25).String())); err != nil {
