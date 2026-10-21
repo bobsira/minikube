@@ -356,7 +356,6 @@ jobs:
 
       - name: Run TestWindowsNode
         id: run_tests
-        continue-on-error: true
         env:
           SSHPASS: ${{ secrets.MINIKUBE_AZ_VM_PASSWORD }}
         run: |

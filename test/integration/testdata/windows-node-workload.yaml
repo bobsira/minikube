@@ -20,6 +20,7 @@ metadata:
   name: win-webserver
 spec:
   replicas: 2
+  progressDeadlineSeconds: 1500
   selector:
     matchLabels:
       app: win-webserver
@@ -39,6 +40,12 @@ spec:
       containers:
         - name: windowswebserver
           image: mcr.microsoft.com/windows/servercore:ltsc2025
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 5
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: "100m"

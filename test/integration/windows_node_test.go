@@ -18,14 +18,19 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // TestWindowsNode validates a hybrid Linux+Windows minikube cluster using the Hyper-V driver.
@@ -46,8 +51,10 @@ func TestWindowsNode(t *testing.T) {
 	}
 
 	profile := UniqueProfileName("windows-node")
+	startedAt := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), Minutes(90))
-	defer CleanupWithLogs(t, profile, cancel)
+	defer cancel()
+	defer cleanupWindowsNode(t, profile)
 
 	t.Run("serial", func(t *testing.T) {
 		tests := []struct {
@@ -70,11 +77,7 @@ func TestWindowsNode(t *testing.T) {
 			{"WebServerConnectivity", validateWebServerConnectivity},
 		}
 		startPassed := false
-		defer func() {
-			if startPassed {
-				logWindowsRuntimeDiagnostics(t, profile, true)
-			}
-		}()
+		defer logWindowsRuntimeDiagnostics(t, profile, true, startedAt)
 		for _, tc := range tests {
 			tc := tc
 			if tc.name != "Start" && !startPassed {
@@ -96,25 +99,84 @@ func TestWindowsNode(t *testing.T) {
 	})
 }
 
-// Capture the eventual image-pull outcome before cleanup, even when the workload's wait timed out.
-func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool) {
+func cleanupWindowsNode(t *testing.T, profile string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	PostMortemLogs(t, profile)
+	if !*cleanup {
+		t.Logf("skipping cleanup of %s (--cleanup=false)", profile)
+		return
+	}
+
+	// Deleting both nested Hyper-V VMs can exceed the shared helper's two-minute budget.
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(5))
+	defer cancel()
+	t.Logf("Cleaning up %q profile ...", profile)
+	if _, err := Run(t, exec.CommandContext(ctx, Target(), "delete", "-p", profile)); err != nil {
+		t.Errorf("failed cleanup of %q: %v (context: %v)", profile, err, ctx.Err())
+	}
+}
+
+// Capture the eventual image-pull outcome before cleanup, even when the workload's wait timed out.
+func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool, startedAt time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	runKubectl := func(args ...string) (*RunResult, error) {
+		commandCtx, commandCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer commandCancel()
+		return Run(t, exec.CommandContext(commandCtx, KubectlBinary(),
+			append([]string{"--context", profile, "--request-timeout=30s"}, args...)...))
+	}
+
 	if includeLogs {
+		t.Logf("Windows diagnostics for test started at %s", startedAt.Format(time.RFC3339))
+		var pods corev1.PodList
 		for _, args := range [][]string{
 			{"get", "nodes", "-o", "json"},
-			{"get", "pods", "-l", "app=win-webserver", "-o", "json"},
-			{"get", "events", "--field-selector=involvedObject.kind=Pod", "-o", "json"},
+			{"get", "pods", "--all-namespaces", "-o", "json"},
+			{"get", "events", "--all-namespaces", "-o", "json"},
 		} {
-			cmd := exec.CommandContext(ctx, KubectlBinary(), append([]string{"--context", profile}, args...)...)
-			rr, err := Run(t, cmd)
+			rr, err := runKubectl(args...)
 			if err != nil {
 				t.Logf("WARNING: Windows workload diagnostics failed: %v", err)
 				continue
 			}
 			t.Logf("Windows workload diagnostics:\n%s", rr.Output())
+			if args[1] == "pods" {
+				if err := json.Unmarshal(rr.Stdout.Bytes(), &pods); err != nil {
+					t.Logf("WARNING: decoding pods for Windows container logs: %v", err)
+				}
+			}
+		}
+
+		for _, pod := range pods.Items {
+			if !windowsDiagnosticPod(pod) {
+				continue
+			}
+			statuses := append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...)
+			statuses = append(statuses, pod.Status.ContainerStatuses...)
+			for _, status := range statuses {
+				for _, previous := range []bool{false, true} {
+					if previous && status.RestartCount == 0 {
+						continue
+					}
+					args := []string{
+						"logs", "-n", pod.Namespace, pod.Name, "-c", status.Name,
+						"--timestamps=true", "--tail=3000",
+						"--since-time=" + startedAt.Format(time.RFC3339),
+						fmt.Sprintf("--previous=%t", previous),
+					}
+					rr, err := runKubectl(args...)
+					if err != nil {
+						t.Logf("WARNING: collecting %s/%s container %s logs (previous=%t): %v",
+							pod.Namespace, pod.Name, status.Name, previous, err)
+						continue
+					}
+					t.Logf("Container logs %s/%s/%s (previous=%t):\n%s",
+						pod.Namespace, pod.Name, status.Name, previous, rr.Output())
+				}
+			}
 		}
 	}
 
@@ -125,9 +187,11 @@ func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool
 	}
 	command := "& ([scriptblock]::Create([Console]::In.ReadToEnd()))"
 	if includeLogs {
-		command += " -IncludeLogs"
+		command += " -IncludeLogs -Since '" + startedAt.Format(time.RFC3339) + "'"
 	}
-	cmd := exec.CommandContext(ctx, KubectlBinary(),
+	commandCtx, commandCancel := context.WithTimeout(ctx, time.Minute)
+	defer commandCancel()
+	cmd := exec.CommandContext(commandCtx, KubectlBinary(),
 		"--context", profile, "exec", "-i", "-n", "kube-system", "daemonset/kube-proxy-windows", "--",
 		"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
 	cmd.Stdin = strings.NewReader(string(script))
@@ -137,6 +201,12 @@ func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool
 		return
 	}
 	t.Logf("Windows runtime diagnostics:\n%s", rr.Output())
+}
+
+func windowsDiagnosticPod(pod corev1.Pod) bool {
+	return (pod.Namespace == "kube-system" && pod.Labels["k8s-app"] == "kube-proxy-windows") ||
+		(pod.Namespace == "kube-flannel" && pod.Labels["app"] == "flannel") ||
+		(pod.Namespace == "default" && pod.Labels["app"] == "win-webserver")
 }
 
 // windowsNodeName returns the name of the Windows worker node in the cluster.
@@ -214,6 +284,7 @@ func validateWindowsNodeStart(ctx context.Context, t *testing.T, profile string)
 	if err != nil {
 		t.Fatalf("failed to start hybrid cluster: %v\n%s", err, rr.Stderr.String())
 	}
+	t.Logf("minikube start output:\n%s", rr.Output())
 }
 
 // validateWindowsNodeCount asserts exactly 2 nodes are present in the cluster.
@@ -397,12 +468,11 @@ func validateWindowsContainerdConfig(ctx context.Context, t *testing.T, profile 
 	}
 }
 
-// validateWindowsWorkload deploys a Windows pause container with a nodeSelector targeting the
-// Windows node and waits for it to reach Running state.
+// validateWindowsWorkload waits for both Windows web-server replicas to pass HTTP readiness.
 func validateWindowsWorkload(ctx context.Context, t *testing.T, profile string) {
 	t.Helper()
 
-	logWindowsRuntimeDiagnostics(t, profile, false)
+	logWindowsRuntimeDiagnostics(t, profile, false, time.Time{})
 
 	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
 		"--context", profile, "apply", "-f", "./testdata/windows-node-workload.yaml"))
@@ -412,8 +482,10 @@ func validateWindowsWorkload(ctx context.Context, t *testing.T, profile string) 
 
 	// Windows containers can take many minutes to pull and start on first run — the
 	// Windows Server Core image is several GB and cold pulls on Azure VMs can exceed 15m.
-	if _, err := PodWait(ctx, t, profile, "default", "app=win-webserver", Minutes(25)); err != nil {
-		t.Errorf("win-webserver pod did not reach Running state: %v", err)
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "rollout", "status", "deployment/win-webserver",
+		"--timeout="+Minutes(25).String())); err != nil {
+		t.Errorf("win-webserver replicas did not become ready: %v", err)
 	}
 }
 
@@ -479,22 +551,34 @@ func validateWorkloadsOnCorrectOS(ctx context.Context, t *testing.T, profile str
 	}
 }
 
-// validateWindowsPodDNS verifies DNS resolution works from inside the Windows pod by running
-// nslookup against the cluster DNS service name. nslookup is used instead of Resolve-DnsName
+// validateWindowsPodDNS verifies that the Kubernetes service name resolves to its ClusterIP.
+// nslookup is used instead of Resolve-DnsName
 // because Resolve-DnsName formats output as a PowerShell table that wraps across lines depending
 // on console width, making reliable string matching fragile.
 func validateWindowsPodDNS(ctx context.Context, t *testing.T, profile string) {
 	t.Helper()
 	winPod := podName(ctx, t, profile, "app=win-webserver")
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "get", "service", "kubernetes", "-n", "default",
+		"-o", "jsonpath={.spec.clusterIP}"))
+	if err != nil {
+		t.Fatalf("failed to get kubernetes service ClusterIP: %v", err)
+	}
+	clusterIP := strings.TrimSpace(rr.Stdout.String())
+	if _, err := netip.ParseAddr(clusterIP); err != nil {
+		t.Fatalf("invalid kubernetes service ClusterIP %q: %v", clusterIP, err)
+	}
+	const name = "kubernetes.default.svc.cluster.local"
 
-	deadline := time.Now().Add(2 * time.Minute)
+	dnsCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	var lastErr error
-	for time.Now().Before(deadline) {
-		rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+	for dnsCtx.Err() == nil {
+		rr, err := Run(t, exec.CommandContext(dnsCtx, KubectlBinary(),
 			"--context", profile,
 			"exec", winPod, "--",
 			"powershell", "-Command",
-			"nslookup kubernetes.default.svc.cluster.local"))
+			"nslookup "+name))
 		if err != nil {
 			lastErr = err
 			time.Sleep(5 * time.Second)
@@ -502,14 +586,60 @@ func validateWindowsPodDNS(ctx context.Context, t *testing.T, profile string) {
 		}
 		out := rr.Stdout.String()
 		t.Logf("nslookup output: %s", out)
-		if strings.Contains(out, "Address") {
-			t.Logf("DNS resolution from Windows pod succeeded")
+		if windowsDNSAnswerMatches(out, name, clusterIP) {
+			t.Logf("DNS resolution from Windows pod succeeded: %s -> %s", name, clusterIP)
 			return
 		}
-		lastErr = fmt.Errorf("unexpected output: %s", out)
+		lastErr = fmt.Errorf("expected %s to resolve to %s, got: %s", name, clusterIP, out)
 		time.Sleep(5 * time.Second)
 	}
 	t.Errorf("DNS resolution from Windows pod failed after 2 minutes: %v", lastErr)
+}
+
+func windowsDNSAnswerMatches(output, name, address string) bool {
+	want, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+	answer := false
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "Server:":
+			answer = false
+		case "Name:":
+			answer = len(fields) == 2 && strings.EqualFold(strings.TrimSuffix(fields[1], "."), name)
+		case "Address:", "Addresses:":
+			if answer {
+				for _, field := range fields[1:] {
+					if got, err := netip.ParseAddr(field); err == nil && got == want {
+						return true
+					}
+				}
+			}
+		default:
+			if answer && len(fields) == 1 {
+				if got, err := netip.ParseAddr(fields[0]); err == nil && got == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func windowsWebResponseError(status int, body string) error {
+	if status != http.StatusOK {
+		return fmt.Errorf("web server returned HTTP %d, want 200", status)
+	}
+	const want = "<H1>Windows Container Web Server</H1>"
+	if !strings.Contains(body, want) {
+		return fmt.Errorf("web server response missing %q: %.200q", want, body)
+	}
+	return nil
 }
 
 // validateCrossNodePodConnectivity verifies Linux → Windows pod connectivity by wget-ing
@@ -545,6 +675,10 @@ func validateCrossNodePodConnectivity(ctx context.Context, t *testing.T, profile
 			lastErr = err
 			time.Sleep(5 * time.Second)
 			continue
+		}
+		if err := windowsWebResponseError(http.StatusOK, rr.Stdout.String()); err != nil {
+			t.Errorf("cross-node connectivity returned an unexpected response: %v", err)
+			return
 		}
 		t.Logf("Cross-node connectivity succeeded: got response from win-webserver")
 		return
@@ -602,11 +736,16 @@ func validateWebServerConnectivity(ctx context.Context, t *testing.T, profile st
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("web server returned HTTP %d, want 200", resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Errorf("reading web server response: %v", err)
 			return
 		}
-		t.Logf("web server responded with HTTP 200")
+		if err := windowsWebResponseError(resp.StatusCode, string(body)); err != nil {
+			t.Error(err)
+			return
+		}
+		t.Logf("web server responded with HTTP 200 and the expected content")
 		return
 	}
 	t.Errorf("web server at %s did not respond after 2 minutes: %v", url, lastErr)

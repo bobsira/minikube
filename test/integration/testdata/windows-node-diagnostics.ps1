@@ -1,4 +1,7 @@
-param([switch]$IncludeLogs)
+param(
+    [switch]$IncludeLogs,
+    [DateTimeOffset]$Since = [DateTimeOffset]::MinValue
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -16,6 +19,10 @@ $ProgressPreference = 'SilentlyContinue'
 
 if (-not $IncludeLogs) { return }
 
+if ($Since -ne [DateTimeOffset]::MinValue) {
+    Write-Output "Test started at $($Since.UtcDateTime.ToString('o')). Native logs below use guest timestamps and may include older base-image history."
+}
+
 $containerd = Get-CimInstance Win32_Service -Filter "Name='containerd'"
 $containerd | Select-Object Name, State, PathName | ConvertTo-Json -Compress
 $match = [regex]::Match($containerd.PathName, '--log-file(?:=|\s+)(?:"([^"]+)"|(\S+))')
@@ -30,6 +37,6 @@ foreach ($path in @($containerdLog, $kubelet.AppStdout, $kubelet.AppStderr) | Se
         Write-Warning "Windows runtime log is unavailable: '$path'"
         continue
     }
-    Write-Output "=== Windows runtime log: $path ==="
+    Write-Output "=== Windows runtime log: $path (last 3000 lines) ==="
     Get-Content -LiteralPath $path -Tail 3000
 }

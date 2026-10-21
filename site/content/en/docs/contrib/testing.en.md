@@ -66,6 +66,33 @@ The `--cleanup=false` test arg ensures that the cluster will not be deleted afte
 
 See [main_test.go](https://github.com/kubernetes/minikube/blob/master/test/integration/main_test.go) for details.
 
+### Windows mixed-OS integration test
+
+`TestWindowsNode` requires a Windows host with Hyper-V and a minikube binary built
+with Windows worker support. It creates a Linux control plane and a Windows worker.
+Run it from `test\integration` so the workload and diagnostic files are available:
+
+```powershell
+go test -c -o .\out\e2e-windows-amd64.exe .\test\integration
+Push-Location .\test\integration
+..\..\out\e2e-windows-amd64.exe --binary=..\..\out\minikube-windows-amd64.exe -test.run '^TestWindowsNode$' -test.v -test.timeout=90m
+Pop-Location
+```
+
+The Windows deployment has two replicas and HTTP readiness probes. The test waits
+up to 25 minutes for the complete rollout, then checks DNS answers and web-server
+content across the cluster and through the NodePort.
+
+Before deleting the cluster, the test collects nodes, pods and events across all
+namespaces, current and previous network-container logs where restarts occurred,
+and native Windows runtime logs. Kubernetes container logs are limited to the
+current test run; native log tails are labelled with the run start time and may
+also contain older base-image history.
+
+Cleanup has a separate five-minute budget and a cleanup error fails the test.
+`--cleanup=false` preserves the cluster for local investigation. Diagnostic
+collection is best-effort and reports warnings without changing the test result.
+
 ### Disabling parallelism
 
 ```shell
