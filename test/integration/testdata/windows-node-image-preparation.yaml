@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: windows-image-preparation
+  labels:
+    app: windows-image-preparation
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/os: windows
+  tolerations:
+    - key: "node.kubernetes.io/os"
+      operator: "Equal"
+      value: "windows"
+      effect: "NoSchedule"
+  containers:
+    - name: prepare
+      image: mcr.microsoft.com/windows/servercore:ltsc2025@sha256:1d3cd3d02eb8496f47d00636b62d41904b63d0dc52ab5cfa4aa61292d3b9a26e
+      imagePullPolicy: IfNotPresent
+      command: ["cmd.exe"]
+      args: ["/c", "exit", "0"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"

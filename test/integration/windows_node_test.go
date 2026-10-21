@@ -1,0 +1,821 @@
+/*
+Copyright 2025 The Kubernetes Authors All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package integration
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"k8s.io/minikube/pkg/minikube/localpath"
+)
+
+// TestWindowsNode validates a hybrid Linux+Windows minikube cluster using the Hyper-V driver.
+// It starts a 2-node cluster (one Linux control-plane, one Windows worker), verifies both
+// nodes are correctly labelled, deploys workloads targeting each OS, and then cleans up.
+//
+// Prerequisites:
+//   - Must run on a Windows host with Hyper-V enabled (physical or Azure nested-virt VM)
+//   - The minikube binary under test must be built from the feature/windows-node-support branch
+//
+// Optional env vars:
+//
+//	WINDOWS_VHD_URL - path or URL to a custom Windows Server VHDX image.
+//	                  If unset, minikube uses the default bundled VHD.
+func TestWindowsNode(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TestWindowsNode requires a Windows host with Hyper-V")
+	}
+
+	profile := UniqueProfileName("windows-node")
+	startedAt := time.Now().UTC()
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(120))
+	defer cancel()
+	defer cleanupWindowsNode(t, profile)
+
+	t.Run("serial", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			validator func(context.Context, *testing.T, string)
+		}{
+			{"Start", validateWindowsNodeStart},
+			{"NodeCount", validateWindowsNodeCount},
+			{"NodeLabels", validateWindowsNodeLabels},
+			{"NodeOSVersion", validateWindowsNodeOSVersion},
+			{"KubeletService", validateWindowsKubeletService},
+			{"KubeletArgs", validateWindowsKubeletArgs},
+			{"NodeCertificates", validateWindowsNodeCertificates},
+			{"ContainerdConfig", validateWindowsContainerdConfig},
+			{"WindowsImagePreparation", validateWindowsImagePreparation},
+			{"WindowsWorkload", validateWindowsWorkload},
+			{"LinuxWorkload", validateLinuxWorkload},
+			{"WorkloadsOnCorrectOS", validateWorkloadsOnCorrectOS},
+			{"DNSFromWindowsPod", validateWindowsPodDNS},
+			{"CrossNodeConnectivity", validateCrossNodePodConnectivity},
+			{"WebServerConnectivity", validateWebServerConnectivity},
+		}
+		failedPrerequisite := ""
+		defer logWindowsRuntimeDiagnostics(t, profile, true, startedAt)
+		for _, tc := range tests {
+			tc := tc
+			if failedPrerequisite != "" {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Skipf("skipping because %s failed", failedPrerequisite)
+				})
+				continue
+			}
+
+			passed := t.Run(tc.name, func(t *testing.T) {
+				defer PostMortemLogs(t, profile)
+				tc.validator(ctx, t, profile)
+			})
+
+			if !passed && (tc.name == "Start" || tc.name == "WindowsImagePreparation") {
+				failedPrerequisite = tc.name
+			}
+		}
+	})
+}
+
+func cleanupWindowsNode(t *testing.T, profile string) {
+	t.Helper()
+	PostMortemLogs(t, profile)
+	if !*cleanup {
+		t.Logf("skipping cleanup of %s (--cleanup=false)", profile)
+		return
+	}
+
+	startedAt := time.Now().UTC()
+	if err := windowsCleanupDiagnostics(t, profile, startedAt, false); err != nil {
+		t.Logf("WARNING: pre-cleanup host diagnostics: %v", err)
+	}
+
+	// Allow five minutes per VM, independently of the workload's context.
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(10))
+	defer cancel()
+	t.Logf("Cleaning up %q profile ...", profile)
+	rr, err := runWindowsCleanupCommand(t, exec.CommandContext(ctx, Target(),
+		"delete", "-p", profile, "-v=7", "--alsologtostderr"))
+	t.Logf("Windows cleanup output:\n%s", rr.Output())
+	if err != nil {
+		t.Errorf("failed cleanup of %q: %v (context: %v)", profile, err, ctx.Err())
+	}
+	if diagnosticErr := windowsCleanupDiagnostics(t, profile, startedAt, true); diagnosticErr != nil {
+		t.Errorf("failed cleanup verification of %q: %v", profile, diagnosticErr)
+	}
+}
+
+func runWindowsCleanupCommand(t *testing.T, cmd *exec.Cmd) (*RunResult, error) {
+	t.Helper()
+	cmd.Cancel = func() error {
+		killProcessFamily(t, cmd.Process.Pid)
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return Run(t, cmd)
+}
+
+func windowsCleanupDiagnostics(t *testing.T, profile string, startedAt time.Time, verifyDeleted bool) error {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("Windows cleanup verification requires a Windows host")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	args := []string{
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+		"-File", filepath.Join(*testdataDir, "windows-node-cleanup-diagnostics.ps1"),
+		"-Profile", profile, "-MinikubeHome", localpath.MiniPath(),
+		"-Since", startedAt.Format(time.RFC3339),
+	}
+	if verifyDeleted {
+		args = append(args, "-VerifyDeleted")
+	}
+	cmd := exec.CommandContext(ctx, "powershell.exe", args...)
+	cmd.WaitDelay = 5 * time.Second
+	rr, err := Run(t, cmd)
+	t.Logf("Windows host cleanup diagnostics (verifyDeleted=%t):\n%s", verifyDeleted, rr.Output())
+	if err != nil {
+		return fmt.Errorf("host cleanup diagnostics: %w (context: %v)", err, ctx.Err())
+	}
+	return nil
+}
+
+// Capture the eventual image-pull outcome before cleanup, even when the workload's wait timed out.
+func logWindowsRuntimeDiagnostics(t *testing.T, profile string, includeLogs bool, startedAt time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	runKubectl := func(args ...string) (*RunResult, error) {
+		commandCtx, commandCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer commandCancel()
+		return Run(t, exec.CommandContext(commandCtx, KubectlBinary(),
+			append([]string{"--context", profile, "--request-timeout=30s"}, args...)...))
+	}
+
+	if includeLogs {
+		t.Logf("Windows diagnostics for test started at %s", startedAt.Format(time.RFC3339))
+		var pods corev1.PodList
+		for _, args := range [][]string{
+			{"get", "nodes", "-o", "json"},
+			{"get", "pods", "--all-namespaces", "-o", "json"},
+			{"get", "events", "--all-namespaces", "-o", "json"},
+		} {
+			rr, err := runKubectl(args...)
+			if err != nil {
+				t.Logf("WARNING: Windows workload diagnostics failed: %v", err)
+				continue
+			}
+			t.Logf("Windows workload diagnostics:\n%s", rr.Output())
+			if args[1] == "pods" {
+				if err := json.Unmarshal(rr.Stdout.Bytes(), &pods); err != nil {
+					t.Logf("WARNING: decoding pods for Windows container logs: %v", err)
+				}
+			}
+		}
+
+		for _, pod := range pods.Items {
+			if !windowsDiagnosticPod(pod) {
+				continue
+			}
+			statuses := append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...)
+			statuses = append(statuses, pod.Status.ContainerStatuses...)
+			for _, status := range statuses {
+				for _, previous := range []bool{false, true} {
+					if previous && status.RestartCount == 0 {
+						continue
+					}
+					args := []string{
+						"logs", "-n", pod.Namespace, pod.Name, "-c", status.Name,
+						"--timestamps=true", "--tail=3000",
+						"--since-time=" + startedAt.Format(time.RFC3339),
+						fmt.Sprintf("--previous=%t", previous),
+					}
+					rr, err := runKubectl(args...)
+					if err != nil {
+						t.Logf("WARNING: collecting %s/%s container %s logs (previous=%t): %v",
+							pod.Namespace, pod.Name, status.Name, previous, err)
+						continue
+					}
+					t.Logf("Container logs %s/%s/%s (previous=%t):\n%s",
+						pod.Namespace, pod.Name, status.Name, previous, rr.Output())
+				}
+			}
+		}
+	}
+
+	script, err := os.ReadFile("./testdata/windows-node-diagnostics.ps1")
+	if err != nil {
+		t.Logf("WARNING: reading Windows runtime diagnostics: %v", err)
+		return
+	}
+	command := "& ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+	if includeLogs {
+		command += " -IncludeLogs -Since '" + startedAt.Format(time.RFC3339) + "'"
+	}
+	commandCtx, commandCancel := context.WithTimeout(ctx, time.Minute)
+	defer commandCancel()
+	cmd := exec.CommandContext(commandCtx, KubectlBinary(),
+		"--context", profile, "exec", "-i", "-n", "kube-system", "daemonset/kube-proxy-windows", "--",
+		"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd.Stdin = strings.NewReader(string(script))
+	rr, err := Run(t, cmd)
+	if err != nil {
+		t.Logf("WARNING: collecting Windows runtime diagnostics: %v", err)
+		return
+	}
+	t.Logf("Windows runtime diagnostics:\n%s", rr.Output())
+}
+
+func windowsDiagnosticPod(pod corev1.Pod) bool {
+	return (pod.Namespace == "kube-system" && pod.Labels["k8s-app"] == "kube-proxy-windows") ||
+		(pod.Namespace == "kube-flannel" && pod.Labels["app"] == "flannel") ||
+		(pod.Namespace == "default" && (pod.Labels["app"] == "win-webserver" ||
+			pod.Labels["app"] == "windows-image-preparation"))
+}
+
+// windowsNodeName returns the name of the Windows worker node in the cluster.
+func windowsNodeName(ctx context.Context, t *testing.T, profile string) string {
+	t.Helper()
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile,
+		"get", "nodes",
+		"-l", "kubernetes.io/os=windows",
+		"-o", "jsonpath={.items[0].metadata.name}"))
+	if err != nil {
+		t.Fatalf("failed to get Windows node name: %v\n%s", err, rr.Stderr.String())
+	}
+	name := strings.TrimSpace(rr.Stdout.String())
+	if name == "" {
+		t.Fatal("no Windows node found in cluster")
+	}
+	return name
+}
+
+// podName returns the name of the first pod matching the given label selector.
+func podName(ctx context.Context, t *testing.T, profile, selector string) string {
+	t.Helper()
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile,
+		"get", "pods",
+		"-l", selector,
+		"-o", "jsonpath={.items[0].metadata.name}"))
+	if err != nil {
+		t.Fatalf("failed to get pod name for %s: %v\n%s", selector, err, rr.Stderr.String())
+	}
+	name := strings.TrimSpace(rr.Stdout.String())
+	if name == "" {
+		t.Fatalf("no pod found matching selector %s", selector)
+	}
+	return name
+}
+
+// winSSH runs a PowerShell command on the Windows node via minikube ssh.
+func winSSH(ctx context.Context, t *testing.T, profile, node, command string) (string, error) {
+	t.Helper()
+	rr, err := Run(t, exec.CommandContext(ctx, Target(),
+		"-p", profile, "ssh", "-n", node, "--", command))
+	stdout := strings.TrimSpace(rr.Stdout.String())
+	if err != nil {
+		return stdout, fmt.Errorf("windows ssh command failed: %w\ncommand: %s\nstdout:\n%s\nstderr:\n%s", err, command, rr.Stdout.String(), rr.Stderr.String())
+	}
+	return stdout, nil
+}
+
+// validateWindowsNodeStart starts a 2-node hybrid cluster with one Linux and one Windows node.
+func validateWindowsNodeStart(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	args := []string{
+		"start", "-p", profile,
+		"--node=role=control-plane",
+		"--node=role=worker,os=windows",
+		"--kubernetes-version=v1.37.0",
+		"--driver=hyperv",
+		"--wait=true",
+		"--wait-timeout=25m",
+		"-v=5",
+		"--alsologtostderr",
+	}
+
+	if vhdURL := os.Getenv("WINDOWS_VHD_URL"); vhdURL != "" {
+		args = append(args, "--windows-vhd-url="+vhdURL)
+	}
+	if vsw := os.Getenv("HYPERV_VIRTUAL_SWITCH"); vsw != "" {
+		args = append(args, "--hyperv-virtual-switch="+vsw)
+	}
+
+	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
+	if err != nil {
+		t.Fatalf("failed to start hybrid cluster: %v\n%s", err, rr.Stderr.String())
+	}
+	t.Logf("minikube start output:\n%s", rr.Output())
+}
+
+// validateWindowsNodeCount asserts exactly 2 nodes are present in the cluster.
+func validateWindowsNodeCount(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "get", "nodes", "--no-headers"))
+	if err != nil {
+		t.Fatalf("kubectl get nodes failed: %v\n%s", err, rr.Stderr.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(rr.Stdout.String()), "\n")
+	if len(lines) != 2 {
+		t.Errorf("expected 2 nodes, got %d:\n%s", len(lines), rr.Stdout.String())
+	}
+}
+
+// validateWindowsNodeLabels checks that the cluster contains one Linux node and one Windows node,
+// identified by the kubernetes.io/os label applied automatically by the kubelet.
+func validateWindowsNodeLabels(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	for _, os := range []string{"linux", "windows"} {
+		rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+			"--context", profile,
+			"get", "nodes",
+			"-l", "kubernetes.io/os="+os,
+			"--no-headers"))
+		if err != nil {
+			t.Fatalf("kubectl get nodes -l kubernetes.io/os=%s failed: %v\n%s", os, err, rr.Stderr.String())
+		}
+		if strings.TrimSpace(rr.Stdout.String()) == "" {
+			t.Errorf("expected at least one %s node but found none", os)
+		}
+	}
+}
+
+// validateWindowsNodeOSVersion reads the Windows version from the registry and confirms
+// the node is running Windows Server 2025.
+func validateWindowsNodeOSVersion(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	node := windowsNodeName(ctx, t, profile)
+
+	out, err := winSSH(ctx, t, profile, node,
+		`powershell -Command "(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').ProductName"`)
+	if err != nil {
+		t.Fatalf("failed to read OS version from Windows node: %v", err)
+	}
+	t.Logf("Windows node OS: %s", out)
+	if !strings.Contains(out, "Windows Server 2025") {
+		t.Errorf("expected Windows Server 2025, got: %q", out)
+	}
+}
+
+// validateWindowsKubeletService verifies that kubelet and containerd Windows services are
+// Running and configured to start automatically.
+func validateWindowsKubeletService(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	node := windowsNodeName(ctx, t, profile)
+
+	for _, svc := range []string{"kubelet", "containerd"} {
+		status, err := winSSH(ctx, t, profile, node,
+			fmt.Sprintf(`powershell -Command "(Get-Service %s).Status"`, svc))
+		if err != nil {
+			t.Errorf("failed to query service %s status: %v", svc, err)
+			continue
+		}
+		if !strings.EqualFold(status, "Running") {
+			t.Errorf("service %s: expected Running, got %q", svc, status)
+		}
+
+		startMode, err := winSSH(ctx, t, profile, node,
+			fmt.Sprintf(`powershell -Command "(Get-CimInstance Win32_Service -Filter \"Name='%s'\").StartMode"`, svc))
+		if err != nil {
+			t.Errorf("failed to query service %s start mode: %v", svc, err)
+			continue
+		}
+		if !strings.EqualFold(startMode, "Auto") {
+			t.Errorf("service %s: expected StartMode Auto, got %q", svc, startMode)
+		}
+	}
+}
+
+// validateWindowsKubeletArgs reads the kubelet process command line via WMI and asserts
+// that required flags are present. Since Kubernetes 1.27 containerRuntimeEndpoint may be
+// set in config.yaml instead of on the command line, so we check both.
+func validateWindowsKubeletArgs(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	node := windowsNodeName(ctx, t, profile)
+
+	cmdLine, err := winSSH(ctx, t, profile, node,
+		`powershell -Command "(Get-CimInstance Win32_Process -Filter \"Name='kubelet.exe'\").CommandLine"`)
+	if err != nil {
+		t.Fatalf("failed to read kubelet command line: %v", err)
+	}
+	t.Logf("kubelet command line: %s", cmdLine)
+
+	if !strings.Contains(cmdLine, "--kubeconfig") {
+		t.Errorf("kubelet command line missing flag %q", "--kubeconfig")
+	}
+
+	// --container-runtime-endpoint may be on the CLI or in config.yaml (k8s 1.27+).
+	if !strings.Contains(cmdLine, "--container-runtime-endpoint") {
+		configYAML, err := winSSH(ctx, t, profile, node,
+			`powershell -Command "Get-Content 'C:\var\lib\kubelet\config.yaml'"`)
+		if err != nil || !strings.Contains(configYAML, "containerRuntimeEndpoint") {
+			t.Errorf("containerRuntimeEndpoint not found in kubelet command line or config.yaml")
+		} else {
+			t.Logf("containerRuntimeEndpoint found in kubelet config.yaml")
+		}
+	}
+}
+
+// validateWindowsNodeCertificates confirms that kubelet client certificates are present
+// on the Windows node. Checks the two paths minikube may provision.
+func validateWindowsNodeCertificates(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	node := windowsNodeName(ctx, t, profile)
+
+	paths := []string{
+		`C:\var\lib\kubelet\pki\kubelet-client-current.pem`,
+		`C:\k\pki\kubelet-client-current.pem`,
+	}
+
+	for _, path := range paths {
+		out, err := winSSH(ctx, t, profile, node,
+			fmt.Sprintf(`powershell -Command "Test-Path '%s'"`, path))
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(out, "True") {
+			t.Logf("kubelet client certificate found at %s", path)
+			return
+		}
+	}
+	t.Errorf("kubelet client certificate not found at any expected path: %v", paths)
+}
+
+// validateWindowsContainerdConfig reads containerd's config.toml from the Windows node and
+// asserts the pause image, runhcs-wcow-process runtime handler, and endpoint are present.
+func validateWindowsContainerdConfig(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	node := windowsNodeName(ctx, t, profile)
+
+	candidates := []string{
+		`C:\Program Files\containerd\config.toml`,
+		`C:\ProgramData\containerd\config.toml`,
+		`C:\k\containerd\config.toml`,
+	}
+	var config string
+	var found bool
+	for _, path := range candidates {
+		out, err := winSSH(ctx, t, profile, node,
+			fmt.Sprintf(`powershell -Command "Get-Content '%s'"`, path))
+		if err == nil && strings.Contains(out, "containerd") {
+			config = out
+			found = true
+			t.Logf("containerd config.toml found at %s", path)
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("containerd config.toml not found at any candidate path: %v", candidates)
+	}
+	t.Logf("containerd config.toml:\n%s", config)
+
+	checks := map[string]string{
+		"pause image":         "pause",
+		"runhcs-wcow-process": "runhcs-wcow-process",
+	}
+	for desc, want := range checks {
+		if !strings.Contains(config, want) {
+			t.Errorf("containerd config.toml missing %s (expected to contain %q)", desc, want)
+		}
+	}
+	// containerd on Windows expresses the named pipe as \\.\pipe\... in config.toml,
+	// not as npipe:// — both formats refer to the same Windows named pipe transport.
+	if !strings.Contains(config, `npipe://`) && !strings.Contains(config, `\\.\pipe\`) {
+		t.Errorf("containerd config.toml missing named pipe endpoint (expected npipe:// or \\\\.\\pipe\\)")
+	}
+}
+
+// validateWindowsImagePreparation isolates the cold image pull and unpack from HTTP readiness.
+func validateWindowsImagePreparation(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	logWindowsRuntimeDiagnostics(t, profile, false, time.Time{})
+	ctx, cancel := context.WithTimeout(ctx, Minutes(30))
+	defer cancel()
+	startedAt := time.Now()
+	defer func() { t.Logf("Windows image preparation took %s", time.Since(startedAt)) }()
+
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "apply", "-f", filepath.Join(*testdataDir, "windows-node-image-preparation.yaml"))); err != nil {
+		t.Fatalf("failed to apply Windows image preparation pod: %v", err)
+	}
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "wait", "--for=jsonpath={.status.phase}=Succeeded",
+		"pod/windows-image-preparation", "--timeout="+Minutes(30).String())); err != nil {
+		t.Fatalf("Windows image preparation did not complete: %v (context: %v)", err, ctx.Err())
+	}
+}
+
+// validateWindowsWorkload waits for both Windows web-server replicas to pass HTTP readiness.
+func validateWindowsWorkload(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "apply", "-f", filepath.Join(*testdataDir, "windows-node-workload.yaml")))
+	if err != nil {
+		t.Fatalf("failed to apply windows workload: %v\n%s", err, rr.Stderr.String())
+	}
+
+	// Image preparation has its own budget; this wait still requires both HTTP-ready replicas.
+	if _, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "rollout", "status", "deployment/win-webserver",
+		"--timeout="+Minutes(25).String())); err != nil {
+		t.Errorf("win-webserver replicas did not become ready: %v", err)
+	}
+}
+
+// validateLinuxWorkload deploys a busybox container with a nodeSelector targeting the Linux node
+// and waits for it to reach Running state.
+func validateLinuxWorkload(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "apply", "-f", "./testdata/linux-node-workload.yaml"))
+	if err != nil {
+		t.Fatalf("failed to apply linux workload: %v\n%s", err, rr.Stderr.String())
+	}
+
+	if _, err := PodWait(ctx, t, profile, "default", "app=linux-test", Minutes(5)); err != nil {
+		t.Errorf("linux-test pod did not reach Running state: %v", err)
+	}
+}
+
+// validateWorkloadsOnCorrectOS confirms that each workload pod is scheduled on a node
+// whose kubernetes.io/os label matches the pod's nodeSelector.
+func validateWorkloadsOnCorrectOS(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	cases := []struct {
+		podSelector string
+		expectedOS  string
+	}{
+		{"app=win-webserver", "windows"},
+		{"app=linux-test", "linux"},
+	}
+
+	for _, tc := range cases {
+		// Get the node name the pod is running on.
+		rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+			"--context", profile,
+			"get", "pods", "-l", tc.podSelector,
+			"-o", "jsonpath={.items[0].spec.nodeName}"))
+		if err != nil {
+			t.Errorf("failed to get node for pod %s: %v\n%s", tc.podSelector, err, rr.Stderr.String())
+			continue
+		}
+		nodeName := strings.TrimSpace(rr.Stdout.String())
+		if nodeName == "" {
+			t.Errorf("pod %s has no nodeName assigned", tc.podSelector)
+			continue
+		}
+
+		// Get the kubernetes.io/os label from that node.
+		rr, err = Run(t, exec.CommandContext(ctx, KubectlBinary(),
+			"--context", profile,
+			"get", "node", nodeName,
+			"-o", "jsonpath={.metadata.labels.kubernetes\\.io/os}"))
+		if err != nil {
+			t.Errorf("failed to get OS label for node %s: %v\n%s", nodeName, err, rr.Stderr.String())
+			continue
+		}
+		nodeOS := strings.TrimSpace(rr.Stdout.String())
+
+		if nodeOS != tc.expectedOS {
+			t.Errorf("pod %s scheduled on node %s with OS=%q, want %q", tc.podSelector, nodeName, nodeOS, tc.expectedOS)
+		}
+	}
+}
+
+// validateWindowsPodDNS verifies that the Kubernetes service name resolves to its ClusterIP.
+// nslookup is used instead of Resolve-DnsName
+// because Resolve-DnsName formats output as a PowerShell table that wraps across lines depending
+// on console width, making reliable string matching fragile.
+func validateWindowsPodDNS(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+	winPod := podName(ctx, t, profile, "app=win-webserver")
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile, "get", "service", "kubernetes", "-n", "default",
+		"-o", "jsonpath={.spec.clusterIP}"))
+	if err != nil {
+		t.Fatalf("failed to get kubernetes service ClusterIP: %v", err)
+	}
+	clusterIP := strings.TrimSpace(rr.Stdout.String())
+	if _, err := netip.ParseAddr(clusterIP); err != nil {
+		t.Fatalf("invalid kubernetes service ClusterIP %q: %v", clusterIP, err)
+	}
+	const name = "kubernetes.default.svc.cluster.local"
+
+	dnsCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	var lastErr error
+	for dnsCtx.Err() == nil {
+		rr, err := Run(t, exec.CommandContext(dnsCtx, KubectlBinary(),
+			"--context", profile,
+			"exec", winPod, "--",
+			"powershell", "-Command",
+			"nslookup "+name))
+		if err != nil {
+			lastErr = err
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		out := rr.Stdout.String()
+		t.Logf("nslookup output: %s", out)
+		if windowsDNSAnswerMatches(out, name, clusterIP) {
+			t.Logf("DNS resolution from Windows pod succeeded: %s -> %s", name, clusterIP)
+			return
+		}
+		lastErr = fmt.Errorf("expected %s to resolve to %s, got: %s", name, clusterIP, out)
+		time.Sleep(5 * time.Second)
+	}
+	t.Errorf("DNS resolution from Windows pod failed after 2 minutes: %v", lastErr)
+}
+
+func windowsDNSAnswerMatches(output, name, address string) bool {
+	want, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+	answer := false
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "Server:":
+			answer = false
+		case "Name:":
+			answer = len(fields) == 2 && strings.EqualFold(strings.TrimSuffix(fields[1], "."), name)
+		case "Address:", "Addresses:":
+			if answer {
+				for _, field := range fields[1:] {
+					if got, err := netip.ParseAddr(field); err == nil && got == want {
+						return true
+					}
+				}
+			}
+		default:
+			if answer && len(fields) == 1 {
+				if got, err := netip.ParseAddr(fields[0]); err == nil && got == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func windowsWebResponseError(status int, body string) error {
+	if status != http.StatusOK {
+		return fmt.Errorf("web server returned HTTP %d, want 200", status)
+	}
+	const want = "<H1>Windows Container Web Server</H1>"
+	if !strings.Contains(body, want) {
+		return fmt.Errorf("web server response missing %q: %.200q", want, body)
+	}
+	return nil
+}
+
+// validateCrossNodePodConnectivity verifies Linux → Windows pod connectivity by wget-ing
+// the win-webserver ClusterIP from the linux-test pod.
+func validateCrossNodePodConnectivity(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	// Get the ClusterIP of the win-webserver service.
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile,
+		"get", "svc", "win-webserver",
+		"-o", "jsonpath={.spec.clusterIP}"))
+	if err != nil {
+		t.Fatalf("failed to get win-webserver ClusterIP: %v\n%s", err, rr.Stderr.String())
+	}
+	clusterIP := strings.TrimSpace(rr.Stdout.String())
+	if clusterIP == "" {
+		t.Fatal("win-webserver ClusterIP is empty")
+	}
+
+	linuxPod := podName(ctx, t, profile, "app=linux-test")
+	url := fmt.Sprintf("http://%s/", clusterIP)
+	t.Logf("Testing cross-node connectivity: linux-test → win-webserver at %s", url)
+
+	deadline := time.Now().Add(2 * time.Minute)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		rr, err = Run(t, exec.CommandContext(ctx, KubectlBinary(),
+			"--context", profile,
+			"exec", linuxPod, "--",
+			"wget", "-qO-", "--timeout=10", url))
+		if err != nil {
+			lastErr = err
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if err := windowsWebResponseError(http.StatusOK, rr.Stdout.String()); err != nil {
+			t.Errorf("cross-node connectivity returned an unexpected response: %v", err)
+			return
+		}
+		t.Logf("Cross-node connectivity succeeded: got response from win-webserver")
+		return
+	}
+	t.Errorf("cross-node connectivity linux→windows failed after 2 minutes: %v", lastErr)
+}
+
+// validateWebServerConnectivity retrieves the NodePort assigned to win-webserver, gets the
+// Windows node's internal IP, and verifies the web server returns HTTP 200 with the expected
+// response body.
+func validateWebServerConnectivity(ctx context.Context, t *testing.T, profile string) {
+	t.Helper()
+
+	// Get the NodePort assigned to the win-webserver service.
+	rr, err := Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile,
+		"get", "svc", "win-webserver",
+		"-o", "jsonpath={.spec.ports[0].nodePort}"))
+	if err != nil {
+		t.Fatalf("failed to get NodePort: %v\n%s", err, rr.Stderr.String())
+	}
+	nodePort := strings.TrimSpace(rr.Stdout.String())
+	if nodePort == "" {
+		t.Fatal("NodePort is empty")
+	}
+
+	// Get the Windows node's internal IP.
+	rr, err = Run(t, exec.CommandContext(ctx, KubectlBinary(),
+		"--context", profile,
+		"get", "nodes",
+		"-l", "kubernetes.io/os=windows",
+		"-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}"))
+	if err != nil {
+		t.Fatalf("failed to get Windows node IP: %v\n%s", err, rr.Stderr.String())
+	}
+	nodeIP := strings.TrimSpace(rr.Stdout.String())
+	if nodeIP == "" {
+		t.Fatal("Windows node IP is empty")
+	}
+
+	url := fmt.Sprintf("http://%s:%s/", nodeIP, nodePort)
+	t.Logf("Checking web server at %s", url)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// Retry for up to 2 minutes — the web server may still be starting.
+	deadline := time.Now().Add(2 * time.Minute)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err != nil {
+			lastErr = err
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Errorf("reading web server response: %v", err)
+			return
+		}
+		if err := windowsWebResponseError(resp.StatusCode, string(body)); err != nil {
+			t.Error(err)
+			return
+		}
+		t.Logf("web server responded with HTTP 200 and the expected content")
+		return
+	}
+	t.Errorf("web server at %s did not respond after 2 minutes: %v", url, lastErr)
+}

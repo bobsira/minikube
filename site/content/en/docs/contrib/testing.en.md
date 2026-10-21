@@ -66,6 +66,48 @@ The `--cleanup=false` test arg ensures that the cluster will not be deleted afte
 
 See [main_test.go](https://github.com/kubernetes/minikube/blob/master/test/integration/main_test.go) for details.
 
+### Windows mixed-OS integration test
+
+`TestWindowsNode` requires a Windows host with Hyper-V and a minikube binary built
+with Windows worker support. It creates a Linux control plane and a Windows worker.
+Run it from `test\integration` so the workload and diagnostic files are available:
+
+```powershell
+go test -c -o .\out\e2e-windows-amd64.exe .\test\integration
+Push-Location .\test\integration
+..\..\out\e2e-windows-amd64.exe --binary=..\..\out\minikube-windows-amd64.exe -test.run '^TestWindowsNode$' -test.v -test.timeout=120m
+Pop-Location
+```
+
+`WindowsImagePreparation` first runs a short-lived Windows pod with a separate
+30-minute budget for the cold image pull, unpack and container start. It uses the
+same digest-pinned Server Core image and `IfNotPresent` policy as the workload.
+Keep both image references in sync when updating the fixture. A preparation
+failure skips the dependent workload checks and still collects diagnostics.
+
+The Windows deployment retains two replicas and HTTP readiness probes. After
+image preparation, the test waits up to 25 minutes for the complete rollout, then
+checks DNS answers and web-server content across the cluster and through the
+NodePort. Preparation isolates the expensive cold-start stage; it does not make
+image extraction faster.
+
+Before deleting the cluster, the test collects nodes, pods and events across all
+namespaces, current and previous network-container logs where restarts occurred,
+and native Windows runtime logs. Kubernetes container logs are limited to the
+current test run; native log tails are labelled with the run start time and may
+also contain older base-image history.
+
+Cleanup has a separate ten-minute budget for both nested Hyper-V VMs. It runs
+verbose deletion, terminates the command's process family on timeout and verifies
+that both VMs and their profile/machine directories are gone. A deletion error,
+timeout or failed verification fails the test. Host-side VM state, checkpoints,
+attached disk paths and recent Hyper-V events are collected before and after
+deletion with separate one-minute budgets and retained in `testout.txt`.
+`--cleanup=false` preserves the cluster and skips host cleanup diagnostics.
+Optional diagnostic collection reports warnings; inability to verify removal
+still fails cleanup. The Windows CI test-process timeout is 120 minutes to allow
+for image preparation and cleanup.
+
 ### Disabling parallelism
 
 ```shell

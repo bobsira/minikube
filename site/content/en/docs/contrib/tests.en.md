@@ -810,3 +810,95 @@ upgrades Kubernetes from oldest to newest
 ## TestMissingContainerUpgrade
 tests a Docker upgrade where the underlying container is missing
 
+## TestWindowsDNSAnswer
+
+## TestWindowsWebResponse
+
+## TestWindowsDiagnosticPod
+
+## TestWindowsWorkloadReadiness
+
+## TestWindowsCleanup
+
+## TestWindowsCleanupCancellation
+
+## TestWindowsWorkflowFailureHandling
+
+## TestWindowsCleanupDiagnosticsScript
+
+## TestWindowsDiagnosticsScript
+
+## TestWindowsNode
+validates a hybrid Linux+Windows minikube cluster using the Hyper-V driver.
+It starts a 2-node cluster (one Linux control-plane, one Windows worker), verifies both
+nodes are correctly labelled, deploys workloads targeting each OS, and then cleans up.
+
+Prerequisites:
+  - Must run on a Windows host with Hyper-V enabled (physical or Azure nested-virt VM)
+  - The minikube binary under test must be built from the feature/windows-node-support branch
+
+Optional env vars:
+
+	WINDOWS_VHD_URL - path or URL to a custom Windows Server VHDX image.
+	                  If unset, minikube uses the default bundled VHD.
+
+#### validateWindowsNodeStart
+starts a 2-node hybrid cluster with one Linux and one Windows node.
+
+#### validateWindowsNodeCount
+asserts exactly 2 nodes are present in the cluster.
+
+#### validateWindowsNodeLabels
+checks that the cluster contains one Linux node and one Windows node,
+identified by the kubernetes.io/os label applied automatically by the kubelet.
+
+#### validateWindowsNodeOSVersion
+reads the Windows version from the registry and confirms
+the node is running Windows Server 2025.
+
+#### validateWindowsKubeletService
+verifies that kubelet and containerd Windows services are
+Running and configured to start automatically.
+
+#### validateWindowsKubeletArgs
+reads the kubelet process command line via WMI and asserts
+that required flags are present. Since Kubernetes 1.27 containerRuntimeEndpoint may be
+set in config.yaml instead of on the command line, so we check both.
+
+#### validateWindowsNodeCertificates
+confirms that kubelet client certificates are present
+on the Windows node. Checks the two paths minikube may provision.
+
+#### validateWindowsContainerdConfig
+reads containerd's config.toml from the Windows node and
+asserts the pause image, runhcs-wcow-process runtime handler, and endpoint are present.
+
+#### validateWindowsImagePreparation
+isolates the cold image pull and unpack from HTTP readiness.
+
+#### validateWindowsWorkload
+waits for both Windows web-server replicas to pass HTTP readiness.
+
+#### validateLinuxWorkload
+deploys a busybox container with a nodeSelector targeting the Linux node
+and waits for it to reach Running state.
+
+#### validateWorkloadsOnCorrectOS
+confirms that each workload pod is scheduled on a node
+whose kubernetes.io/os label matches the pod's nodeSelector.
+
+#### validateWindowsPodDNS
+verifies that the Kubernetes service name resolves to its ClusterIP.
+nslookup is used instead of Resolve-DnsName
+because Resolve-DnsName formats output as a PowerShell table that wraps across lines depending
+on console width, making reliable string matching fragile.
+
+#### validateCrossNodePodConnectivity
+verifies Linux → Windows pod connectivity by wget-ing
+the win-webserver ClusterIP from the linux-test pod.
+
+#### validateWebServerConnectivity
+retrieves the NodePort assigned to win-webserver, gets the
+Windows node's internal IP, and verifies the web server returns HTTP 200 with the expected
+response body.
+
